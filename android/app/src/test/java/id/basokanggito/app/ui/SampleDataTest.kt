@@ -6,8 +6,38 @@ import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.text.AnnotatedString
 import java.io.File
 import javax.xml.parsers.DocumentBuilderFactory
+import id.basokanggito.app.data.*
 
 class SampleDataTest {
+    @Test fun legacyReplayRetainsKnownChronologyWithoutReplacingIncomingFinancialFields() {
+        val previous = BookRecord("root", "sale", "2026-10-26", 1, 100, channel = "langsung",
+            receipts = listOf(Payment("payment", "2026-10-26", 50, "cash", createdAt = "2026-10-26T02:00:00Z")),
+            createdAt = "2026-10-26T01:00:00Z")
+        val incoming = previous.copy(date = "2026-10-27", version = 2, amount = 200, note = "Latest correction", voided = true,
+            createdAt = java.time.Instant.EPOCH.toString(), receipts = listOf(
+                Payment("payment", "2026-10-27", 75, "transfer", voided = true),
+                Payment("new-payment", "2026-10-27", 20, "cash")))
+        val expected = incoming.copy(createdAt = previous.createdAt,
+            receipts = listOf(incoming.receipts[0].copy(createdAt = previous.receipts[0].createdAt), incoming.receipts[1]))
+        assertEquals(expected, incoming.withKnownChronology(previous))
+        assertEquals(incoming, incoming.withKnownChronology(null))
+        assertEquals(incoming, incoming.withKnownChronology(previous.copy(id = "other-root")))
+        val knownIncoming = incoming.copy(createdAt = "2026-10-27T03:00:00Z",
+            receipts = incoming.receipts.map { it.copy(createdAt = "2026-10-27T04:00:00Z") })
+        assertEquals(knownIncoming, knownIncoming.withKnownChronology(previous))
+    }
+    @Test fun historyUsesBusinessDateThenCreationTimeThenStableId() {
+        val early = BookRecord("z", "sale", "2026-10-26", 1, 100, channel = "langsung", createdAt = "2026-10-26T01:00:00Z")
+        val later = early.copy(id = "a", createdAt = "2026-10-26T02:00:00Z")
+        val tied = later.copy(id = "b")
+        val receipt = Payment("p", "2026-10-26", 50, "cash", createdAt = "2026-10-26T03:00:00Z")
+        val nextDay = early.copy(id = "n", date = "2026-10-27")
+        val entries = listOf(early.copy(receipts = listOf(receipt)), tied, nextDay, later)
+        val expected = listOf("n", "p", "a", "b", "z")
+        assertEquals(expected, presentation(NotebookState(records = entries)).map { it.id })
+        assertEquals(expected, presentation(NotebookState(records = entries.reversed())).map { it.id })
+        assertEquals(expected, presentation(NotebookState(records = entries.map { if (it.id == "a") it.copy(version = 2, amount = 200) else it })).map { it.id })
+    }
     @Test fun groupedMoneyPreservesEveryCursorPosition() {
         listOf("1", "25000", "001000", "9223372036854775807").forEach { raw ->
             val result = RupiahGrouping.filter(AnnotatedString(raw))

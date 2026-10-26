@@ -7,6 +7,9 @@ info:
     private development token and loopback-only hosting. Not production authentication.
     Business dates use Asia/Jakarta; system audit timestamps are UTC. All monetary values
     and sync cursors are decimal strings. Platform amounts are net after fees.
+    Optional createdAt values are immutable server creation timestamps for presentation,
+    separate from business dates and commit-order sync cursors. Offline clients may use
+    provisional local timestamps until first synchronization, so presentation order may change then.
 servers:
   - url: http://127.0.0.1:3000
 paths:
@@ -104,6 +107,8 @@ paths:
         Start after=0. Persist snapshots and returned cursor in one local transaction.
         Follow hasMore until false. Ignore older root versions, preserve local pending writes,
         and retain tombstones. The stream is retained in full in Milestone 1; no cursor expiry.
+        Legacy snapshots are enriched with root/receipt createdAt values at read time without
+        changing their historical amounts, versions, dates or the stored operation replay result.
       parameters:
         - {name: after, in: query, schema: {type: string, default: '0', pattern: '^[0-9]+$'}}
         - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 100}}
@@ -255,6 +260,7 @@ components:
         kind: {type: string, enum: [sale, expense]}
         date: {type: string, format: date}
         version: {type: integer, minimum: 1}
+        createdAt: {type: string, format: date-time, description: 'Immutable server creation time in UTC for display ordering. Optional for compatibility with old operation replay results; never a business date or synchronization cursor.'}
         amount: {type: string, pattern: '^[0-9]+$'}
         note: {type: string}
         voided: {type: boolean}
@@ -274,6 +280,7 @@ components:
               id: {type: string, format: uuid}
               date: {type: string, format: date}
               amount: {type: string}
+              createdAt: {type: string, format: date-time, description: 'Immutable server receipt creation time in UTC, independent of its received date.'}
               method: {type: string, enum: [cash, transfer]}
               voided: {type: boolean}
     Totals:

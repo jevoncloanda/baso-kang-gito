@@ -25,13 +25,13 @@ import java.time.*
 
 private fun displayChannel(code: String) = SalesChannels[ChannelCodes.indexOf(code).coerceAtLeast(0)]
 private fun channelCode(label: String) = ChannelCodes[SalesChannels.indexOf(label).coerceAtLeast(0)]
-private fun presentation(state: NotebookState): List<JournalEntry> = state.records.flatMap { record ->
+internal fun presentation(state: NotebookState): List<JournalEntry> = state.records.flatMap { record ->
     val sync = state.pending.filter { it.recordId == record.id }.let { if (it.any { p -> p.state == "failed" }) "failed" else if (it.isNotEmpty()) "pending" else "" }
     val root = JournalEntry(record.id, record.date, if (record.kind == "expense") "Belanja" else displayChannel(record.channel),
-        record.amount, record.received, record.customer, record.note, record.items.map { JournalLine(it.name, it.amount) }, voided = record.voided, syncState = sync)
+        record.amount, record.received, record.customer, record.note, record.items.map { JournalLine(it.name, it.amount) }, voided = record.voided, syncState = sync, createdAt = record.createdAt)
     listOf(root) + record.receipts.map { payment -> JournalEntry(payment.id, payment.date, displayChannel(record.channel), payment.amount,
-        customer = record.customer, receiptFor = record.id, voided = record.voided || payment.voided, syncState = sync) }
-}
+        customer = record.customer, receiptFor = record.id, voided = record.voided || payment.voided, syncState = sync, createdAt = payment.createdAt) }
+}.sortedWith(compareByDescending<JournalEntry> { it.date }.thenByDescending { Instant.parse(it.createdAt) }.thenBy { it.id })
 
 @Composable
 fun FunctionalNotebook() {
@@ -60,18 +60,33 @@ fun FunctionalNotebook() {
     var receiptId by rememberSaveable { mutableStateOf(newId()) }
     var draftLoaded by remember { mutableStateOf(false) }
     var notice by rememberSaveable { mutableStateOf(false) }
+    var recoveredEdit by rememberSaveable { mutableStateOf("") }
     val keyboard = LocalSoftwareKeyboardController.current
     fun persist() {
         model.draft(JSONObject().put("route", route).put("date", dateText).put("kind", draftKind).put("id", recordId).put("version", baseVersion).put("reason", reason)
             .put("sale", JSONObject().put("amount", sale.amount).put("customer", sale.customer).put("channel", sale.channel).put("paid", sale.paid).put("note", sale.note).put("method", sale.method))
             .put("expense", JSONArray(expense.map { JSONObject().put("id", it.id).put("name", it.name).put("amount", it.amount) }))
-            .put("receiptAmount", receiptAmount).put("receiptDate", receiptDate).put("receiptMethod", receiptMethod).put("receiptId", receiptId).toString())
+            .put("receiptAmount", receiptAmount).put("receiptDate", receiptDate).put("receiptMethod", receiptMethod).put("receiptId", receiptId)
+            .apply { if (recoveredEdit.isNotEmpty()) put("recoveredEdit", JSONObject(recoveredEdit)) }.toString())
+    }
+    fun restoreEdit(edit: RecoveredEdit) {
+        val local = edit.local
+        recoveredEdit = edit.json().toString()
+        recordId = local.id; baseVersion = edit.server?.version ?: 0; dateText = local.date
+        reason = edit.reason; draftKind = local.kind; route = local.kind
+        if (local.kind == "sale") sale = SaleDraft(local.amount.toString(), local.customer, displayChannel(local.channel), local.received > 0, local.note, local.receipts.firstOrNull { !it.voided }?.method ?: "cash")
+        else expense = ArrayList(local.items.map { ExpenseDraftLine(it.id, it.name, it.amount.toString()) })
+        persist()
     }
     LaunchedEffect(state.loaded) {
         if (state.loaded && !draftLoaded) {
-            state.meta["draft"]?.takeIf { it.isNotEmpty() }?.let { raw ->
+            val recovered = state.meta["recoveredEdit"]?.takeIf { it.isNotEmpty() }
+            if (recovered != null) {
+                runCatching { restoreEdit(RecoveredEdit.parse(recovered)) }.onFailure { model.error.value = "draft_unreadable" }
+            } else state.meta["draft"]?.takeIf { it.isNotEmpty() }?.let { raw ->
                 runCatching {
                     val draft = JSONObject(raw); val s = draft.getJSONObject("sale")
+                    recoveredEdit = draft.optJSONObject("recoveredEdit")?.toString().orEmpty()
                     dateText = validDate(draft.getString("date")); recordId = validId(draft.getString("id")); baseVersion = draft.getInt("version")
                     draftKind = draft.getString("kind"); reason = draft.getString("reason")
                     sale = SaleDraft(s.getString("amount"), s.getString("customer"), s.getString("channel"), s.getBoolean("paid"), s.getString("note"), s.getString("method"))
@@ -88,6 +103,7 @@ fun FunctionalNotebook() {
         saved?.let {
             selectedId = it.id; dateText = it.date; route = "detail"; notice = true
             sale = SaleDraft(); expense = arrayListOf(ExpenseDraftLine(newId())); draftKind = ""; reason = ""; baseVersion = 0; recordId = newId()
+            recoveredEdit = ""
             model.draft(""); keyboard?.hide(); model.saved.value = null
         }
     }
@@ -95,10 +111,11 @@ fun FunctionalNotebook() {
     fun begin(kind: String, record: BookRecord? = null) {
         model.error.value = ""; notice = false
         if (record != null) {
+            recoveredEdit = ""
             recordId = record.id; baseVersion = record.version; dateText = record.date; reason = ""
             if (kind == "sale") sale = SaleDraft(record.amount.toString(), record.customer, displayChannel(record.channel), false, record.note)
             if (kind == "expense") expense = ArrayList(record.items.map { ExpenseDraftLine(it.id, it.name, it.amount.toString()) })
-        } else if (draftKind != kind) { recordId = newId(); baseVersion = 0; reason = "" }
+        } else if (draftKind != kind) { recordId = newId(); baseVersion = 0; reason = ""; recoveredEdit = "" }
         draftKind = kind; route = kind; persist()
     }
     BackHandler(route != "journal" && !saving, ::back)
@@ -155,7 +172,7 @@ fun FunctionalNotebook() {
                             if (aggregate != null) begin("sale", aggregate) else { sale = changed; persist() }
                         }, formError, real = true, editing = baseVersion > 0, onDate = { dateText = it.toString(); persist() }, extra = {
                             if (baseVersion > 0) EntryInput(stringResource(R.string.correction_reason), reason, { reason = it; persist() })
-                            TextButton(onClick = { sale = SaleDraft(); draftKind = ""; route = "journal"; model.draft("") }) { Text(stringResource(R.string.discard_draft)) }
+                            TextButton(onClick = { sale = SaleDraft(); draftKind = ""; recoveredEdit = ""; route = "journal"; model.draft("") }) { Text(stringResource(R.string.discard_draft)) }
                         }) {
                             val data = JSONObject().put("date", dateText).put("amount", sale.amount).put("channel", channelCode(sale.channel)).put("customer", sale.customer).put("note", sale.note)
                             if (baseVersion == 0) data.put("paid", sale.paid).apply { if (sale.paid) put("receiptId", newId()).put("method", sale.method) }
@@ -164,7 +181,7 @@ fun FunctionalNotebook() {
                         }
                         "expense" -> ExpenseForm(date, expense, { expense = ArrayList(it); persist() }, formError, real = true, onDate = { dateText = it.toString(); persist() }, extra = {
                             if (baseVersion > 0) EntryInput(stringResource(R.string.correction_reason), reason, { reason = it; persist() })
-                            TextButton(onClick = { expense = arrayListOf(ExpenseDraftLine(newId())); draftKind = ""; route = "journal"; model.draft("") }) { Text(stringResource(R.string.discard_draft)) }
+                            TextButton(onClick = { expense = arrayListOf(ExpenseDraftLine(newId())); draftKind = ""; recoveredEdit = ""; route = "journal"; model.draft("") }) { Text(stringResource(R.string.discard_draft)) }
                         }) {
                             val data = JSONObject().put("date", dateText).put("reason", reason).put("items", JSONArray(expense.filter { it.name.isNotBlank() || it.amount.isNotBlank() }.map {
                                 JSONObject().put("id", it.id).put("name", it.name).put("amount", it.amount)
@@ -184,11 +201,7 @@ fun FunctionalNotebook() {
                                 if (target.isNotEmpty()) data.put("receiptId", target)
                                 model.submit("void", record.id, expected, data)
                             }, onUseServer = { model.review(record.id) { success -> if (success) { route = "journal"; notice = false } else model.error.value = "server_version_unavailable" } },
-                                onReopen = { model.reopen(record.id) { local, server ->
-                                    begin(local.kind, local); baseVersion = server?.version ?: 0
-                                    sale = sale.copy(paid = local.received > 0)
-                                    persist()
-                                } })
+                                onReopen = { model.reopen(record.id, ::restoreEdit) })
                         }
                         "recap" -> MonthlyRecap(entries, YearMonth.parse(monthText), { monthText = it.toString() }, realRecords = state.records) { dateText = it; route = "journal" }
                         else -> Journal(entries.filter { it.date == dateText }, date, { dateText = it.toString() }, { begin("sale") }, { begin("expense") },
@@ -276,7 +289,7 @@ private fun RecordDetail(record: BookRecord, state: NotebookState, notice: Boole
             else {
                 MoneyRow(stringResource(R.string.received), record.received)
                 MoneyRow(stringResource(R.string.unpaid), record.amount - record.received)
-                record.receipts.forEach { payment ->
+                record.receipts.sortedWith(compareByDescending<Payment> { it.date }.thenByDescending { Instant.parse(it.createdAt) }.thenBy { it.id }).forEach { payment ->
                     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         MoneyRow(dateLabel(LocalDate.parse(payment.date)), payment.amount)
                         Text(stringResource(if (payment.method == "cash") R.string.cash else R.string.transfer))

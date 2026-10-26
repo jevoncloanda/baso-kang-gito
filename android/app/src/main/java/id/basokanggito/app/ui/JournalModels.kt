@@ -19,6 +19,7 @@ data class JournalEntry(
     val note: String = "",
     val lines: List<JournalLine> = emptyList(),
     val receiptFor: String = "", val voided: Boolean = false, val syncState: String = "",
+    val createdAt: String = java.time.Instant.EPOCH.toString(),
 ) : Serializable {
     val isExpense: Boolean get() = lines.isNotEmpty()
     val isReceipt: Boolean get() = receiptFor.isNotEmpty()

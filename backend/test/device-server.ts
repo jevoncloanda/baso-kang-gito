@@ -5,6 +5,7 @@ import { readConfig, readBookkeepingConfig } from '../src/config.js';
 import { createDatabase } from '../src/database.js';
 import { createMigrator } from '../src/migrations.js';
 import { buildApp } from '../src/app.js';
+import { uuid } from '../src/bookkeeping.js';
 
 const config=readConfig(); const auth=readBookkeepingConfig(); if(!auth) throw Error('Configure private development token');
 if(process.argv.includes('--stop')) {
@@ -18,11 +19,22 @@ const url=new URL(config.databaseUrl);url.searchParams.set('options',`-c search_
 const db=createDatabase(url.toString());
 const migrated=await createMigrator(db,schema).migrateToLatest();if(migrated.error)throw migrated.error;
 const app=buildApp(async()=>{},false,{db,token:auth.token});
-const droppedExpenses=new Set<string>();
+// A transport may transparently retry a buffered POST. Block every acknowledgment
+// until the test explicitly releases it, rather than assuming exactly one attempt.
+const blockedAcknowledgments=new Set<string>();
+const droppedAttempts=new Map<string,number>();
+app.post('/test/acknowledgments',async(request,reply)=>{
+  if(request.headers.authorization!==`Bearer ${auth.token}`)return reply.code(401).send({error:'unauthorized'});
+  const body=request.body as {recordId?:unknown;blocked?:unknown};
+  const id=uuid(body?.recordId);
+  if(typeof body.blocked!=='boolean')return reply.code(400).send({error:'invalid_request'});
+  if(body.blocked)blockedAcknowledgments.add(id);else blockedAcknowledgments.delete(id);
+  return {attempts:droppedAttempts.get(id)??0};
+});
 app.addHook('onSend',async(request,reply,payload)=>{
   const body=request.body as {action?:string;recordId?:string}|undefined;
-  if(request.method==='POST'&&request.url==='/v1/operations'&&body?.action==='save_expense'&&body.recordId&&!droppedExpenses.has(body.recordId)&&reply.statusCode===200){
-    droppedExpenses.add(body.recordId);reply.raw.destroy();
+  if(request.method==='POST'&&request.url==='/v1/operations'&&body?.recordId&&blockedAcknowledgments.has(body.recordId)&&reply.statusCode===200){
+    droppedAttempts.set(body.recordId,(droppedAttempts.get(body.recordId)??0)+1);reply.raw.destroy();
   }
   return payload;
 });
@@ -38,4 +50,5 @@ app.post('/test/shutdown',async(request,reply)=>{
   setTimeout(()=>{void close();},100);
   return {stopped:true};
 });
-await app.listen({host:'127.0.0.1',port:3001});console.log('Isolated device integration API listening on loopback port 3001');
+// Container runs must publish this port on host loopback only.
+await app.listen({host:process.argv.includes('--container')?'0.0.0.0':'127.0.0.1',port:3001});console.log('Isolated device integration API listening on port 3001');

@@ -16,6 +16,7 @@ import java.util.concurrent.TimeUnit
 data class HttpResult(val status: Int, val body: JSONObject)
 class NotebookHttpClient(private val baseUrl: String, private val token: String) {
     fun upload(operation: JSONObject) = request("/v1/operations", operation.toString())
+    fun post(path: String, body: JSONObject) = request(path, body.toString())
     fun download(cursor: String) = request("/v1/changes?after=$cursor&limit=100")
     fun get(path: String) = request(path)
     private fun request(path: String, body: String? = null): HttpResult {

@@ -3,10 +3,10 @@ import { sql, type Kysely, type Transaction } from 'kysely';
 import type { Database } from './database.js';
 
 type Db = Kysely<Database> | Transaction<Database>;
-export type Receipt = { id: string; date: string; amount: string; method: 'cash'|'transfer'; voided: boolean };
+export type Receipt = { id: string; date: string; amount: string; method: 'cash'|'transfer'; voided: boolean; createdAt?: string };
 export type RecordData = {
   id: string; kind: 'sale'|'expense'; date: string; version: number; amount: string; note: string; voided: boolean;
-  channel?: string; origin?: string; entryKind?: string; customer?: string;
+  channel?: string; origin?: string; entryKind?: string; customer?: string; createdAt?: string;
   receipts?: Receipt[]; items?: { id: string; name: string; amount: string }[];
 };
 export class FinancialError extends Error {
@@ -47,17 +47,21 @@ function canonical(value: unknown): string {
 
 export async function record(db: Db, id: string): Promise<RecordData | undefined> {
   const sale = await sql<RecordData>`SELECT id, 'sale' AS kind, business_date::text AS date, version, net_amount_rupiah::text AS amount,
-    channel, origin, entry_kind AS "entryKind", customer_name AS customer, note, (voided_at IS NOT NULL) AS voided
+    channel, origin, entry_kind AS "entryKind", customer_name AS customer, note, (voided_at IS NOT NULL) AS voided,
+    to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS "createdAt"
     FROM sales WHERE id=${id}::uuid`.execute(db);
   const root = sale.rows[0];
   if (root) {
     root.receipts = (await sql<Receipt>`SELECT r.id, r.received_date::text AS date, a.amount_rupiah::text AS amount, r.method,
-      (r.voided_at IS NOT NULL) AS voided FROM receipts r JOIN receipt_allocations a ON a.receipt_id=r.id
+      (r.voided_at IS NOT NULL) AS voided,
+      to_char(r.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS "createdAt"
+      FROM receipts r JOIN receipt_allocations a ON a.receipt_id=r.id
       WHERE a.sale_id=${id}::uuid ORDER BY r.created_at,r.id`.execute(db)).rows;
     return root;
   }
   const expense = (await sql<RecordData>`SELECT id,'expense' AS kind,business_date::text AS date,version,note,
-    (voided_at IS NOT NULL) AS voided, (SELECT COALESCE(sum(amount_rupiah),0)::text FROM expense_items WHERE expense_entry_id=e.id) AS amount
+    (voided_at IS NOT NULL) AS voided, (SELECT COALESCE(sum(amount_rupiah),0)::text FROM expense_items WHERE expense_entry_id=e.id) AS amount,
+    to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS "createdAt"
     FROM expense_entries e WHERE id=${id}::uuid`.execute(db)).rows[0];
   if (expense) expense.items = (await sql<{id:string;name:string;amount:string}>`SELECT id,name,amount_rupiah::text AS amount
     FROM expense_items WHERE expense_entry_id=${id}::uuid ORDER BY position`.execute(db)).rows;
@@ -157,6 +161,25 @@ async function addReceipt(db: Db,saleId:string,channel:string,data:{[key:string]
 export async function changes(db:Db, after:string,limit:number) {
   if (!/^(0|[1-9][0-9]{0,17})$/.test(after) || !Number.isInteger(limit) || limit<1 || limit>100) throw invalid();
   const rows=(await sql<{cursor:string;record:RecordData}>`SELECT cursor::text,record FROM sync_changes WHERE cursor>${after}::bigint ORDER BY sync_changes.cursor LIMIT ${limit}`.execute(db)).rows;
+  // Enrich legacy snapshots for display only. Never rewrite financial snapshots or stored replay results.
+  const missingIds=[...new Set(rows.flatMap(({record})=>[
+    ...(record.createdAt?[]:[record.id]), ...(record.receipts??[]).filter(receipt=>!receipt.createdAt).map(receipt=>receipt.id),
+  ]))];
+  if (missingIds.length) {
+    const timestamps=(await sql<{id:string;kind:string;createdAt:string}>`SELECT id,'sale' AS kind,
+      to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS "createdAt" FROM sales WHERE id=ANY(${missingIds}::uuid[])
+      UNION ALL SELECT id,'expense',to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') FROM expense_entries WHERE id=ANY(${missingIds}::uuid[])
+      UNION ALL SELECT id,'receipt',to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') FROM receipts WHERE id=ANY(${missingIds}::uuid[])`.execute(db)).rows;
+    const createdAt=new Map(timestamps.map(row=>[`${row.kind}:${row.id}`,row.createdAt]));
+    for (const {record} of rows) {
+      const rootTime=createdAt.get(`${record.kind}:${record.id}`);
+      if (!record.createdAt && rootTime) record.createdAt=rootTime;
+      for (const receipt of record.receipts??[]) {
+        const receiptTime=createdAt.get(`receipt:${receipt.id}`);
+        if (!receipt.createdAt && receiptTime) receipt.createdAt=receiptTime;
+      }
+    }
+  }
   return {changes:rows,cursor:rows.at(-1)?.cursor??after,hasMore:rows.length===limit};
 }
 

@@ -111,4 +111,59 @@ test('financial operations, two independent clients, retries, conflicts and exac
     const ops=(await sql<{n:string}>`SELECT count(*)::text AS n FROM financial_operations`.execute(db)).rows[0]!.n;
     assert.equal(all.length,Number(ops));
   });
+  await t.test('root and receipt creation timestamps are canonical and corrections retain chronology',async()=>{
+    const root=sale(true);
+    const response=await post(root); assert.equal(response.statusCode,200,response.body);
+    const created=response.json().record;
+    for (const value of [created.createdAt,created.receipts[0].createdAt]) {
+      assert.match(value,/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+      assert.equal(new Date(value).toISOString(),value);
+    }
+    // Fixed fixture times distinguish creation from update time without sleeps.
+    const rootTime='2020-01-02T03:04:05.678Z'; const receiptTime='2020-01-02T03:04:05.789Z';
+    await sql`UPDATE sales SET created_at=${rootTime}::timestamptz WHERE id=${root.recordId}::uuid`.execute(db);
+    await sql`UPDATE receipts SET created_at=${receiptTime}::timestamptz WHERE id=${root.data.receiptId}::uuid`.execute(db);
+    const corrected=await post({id:randomUUID(),action:'save_sale',recordId:root.recordId,expectedVersion:1,
+      data:{date:'2026-10-31',channel:'langsung',amount:'110000',reason:'Correct amount, retain creation chronology'}});
+    assert.equal(corrected.statusCode,200,corrected.body);
+    assert.equal(corrected.json().record.createdAt,rootTime);
+    assert.equal(corrected.json().record.receipts[0].createdAt,receiptTime);
+    const expenseOp={id:randomUUID(),action:'save_expense',recordId:randomUUID(),expectedVersion:0,
+      data:{date:'2026-10-31',items:[{id:randomUUID(),name:'Timestamp fixture',amount:'10000'}]}};
+    const expenseResponse=await post(expenseOp); assert.equal(expenseResponse.statusCode,200,expenseResponse.body);
+    assert.equal(new Date(expenseResponse.json().record.createdAt).toISOString(),expenseResponse.json().record.createdAt);
+    await sql`UPDATE expense_entries SET created_at=${rootTime}::timestamptz WHERE id=${expenseOp.recordId}::uuid`.execute(db);
+    const correctedExpense=await post({...expenseOp,id:randomUUID(),expectedVersion:1,
+      data:{...expenseOp.data,reason:'Correct expense, retain chronology',items:[{...expenseOp.data.items[0]!,amount:'12000'}]}});
+    assert.equal(correctedExpense.statusCode,200,correctedExpense.body);
+    assert.equal(correctedExpense.json().record.createdAt,rootTime);
+  });
+  await t.test('legacy pull timestamps preserve historical snapshots and immutable operation replay',async()=>{
+    const op=sale(true);
+    const response=await post(op); assert.equal(response.statusCode,200,response.body);
+    const original=response.json(); const legacy=structuredClone(original);
+    delete legacy.record.createdAt;
+    for (const receipt of legacy.record.receipts) delete receipt.createdAt;
+    const originalHash=(await sql<{payload_hash:string}>`SELECT payload_hash FROM financial_operations WHERE id=${op.id}::uuid`.execute(db)).rows[0]!.payload_hash;
+    // Simulate pre-timestamp snapshots only inside this disposable schema.
+    await sql`UPDATE financial_operations SET result=${JSON.stringify(legacy)}::jsonb WHERE id=${op.id}::uuid`.execute(db);
+    await sql`UPDATE sync_changes SET record=${JSON.stringify(legacy.record)}::jsonb WHERE cursor=${original.cursor}::bigint`.execute(db);
+    const correction=await post({id:randomUUID(),action:'save_sale',recordId:op.recordId,expectedVersion:1,
+      data:{date:'2026-11-01',channel:'langsung',amount:'120000',reason:'Later correction must not replace historical snapshot'}});
+    assert.equal(correction.statusCode,200,correction.body);
+    const page=await get(`/v1/changes?after=${BigInt(original.cursor)-1n}&limit=100`);
+    assert.equal(page.statusCode,200,page.body);
+    const pulled=page.json().changes.find((change:any)=>change.cursor===original.cursor).record;
+    assert.equal(pulled.createdAt,original.record.createdAt);
+    assert.equal(pulled.receipts[0].createdAt,original.record.receipts[0].createdAt);
+    const historical=structuredClone(pulled); delete historical.createdAt;
+    for (const receipt of historical.receipts) delete receipt.createdAt;
+    assert.deepEqual(historical,legacy.record);
+    const replay=await post(op); assert.equal(replay.statusCode,200,replay.body);
+    assert.deepEqual(replay.json(),legacy);
+    const stored=(await sql<{payload_hash:string;result:unknown}>`SELECT payload_hash,result FROM financial_operations WHERE id=${op.id}::uuid`.execute(db)).rows[0]!;
+    assert.equal(stored.payload_hash,originalHash); assert.deepEqual(stored.result,legacy);
+    const snapshot=(await sql<{record:unknown}>`SELECT record FROM sync_changes WHERE cursor=${original.cursor}::bigint`.execute(db)).rows[0]!.record;
+    assert.deepEqual(snapshot,legacy.record);
+  });
 });

@@ -18,7 +18,8 @@ class FunctionalNotebookTest {
     @Before fun isolate() { app.resetRepository() }
     private fun awaitText(text: String) { compose.waitUntil(10_000) { compose.onAllNodesWithText(text).fetchSemanticsNodes().isNotEmpty() } }
     private fun screenshot(name: String) {
-        Espresso.closeSoftKeyboard(); compose.waitForIdle()
+        // Keyboard actions belong to the form interactions, not a capture-only helper.
+        compose.waitForIdle()
         val output = InstrumentationRegistry.getInstrumentation().uiAutomation.executeShellCommand("screencap -p /data/local/tmp/baso-functional-$name.png")
         android.os.ParcelFileDescriptor.AutoCloseInputStream(output).use { it.readBytes() }
     }
@@ -59,11 +60,14 @@ class FunctionalNotebookTest {
             compose.onNodeWithText("Save").performClick(); awaitText("Edit entry")
             Assert.assertEquals(175000L, runBlocking { app.repository.dao.records().map { BookRecord.parse(JSONObject(it.payload)) }.single { it.kind == "expense" }.amount })
             val client = NotebookHttpClient("http://127.0.0.1:3001", BuildConfig.SYNC_TOKEN)
-            // The real test API commits this expense, then drops its first response.
+            val expenseId = runBlocking { app.repository.dao.records().map { BookRecord.parse(JSONObject(it.payload)) }.single { it.kind == "expense" }.id }
+            client.post("/test/acknowledgments", JSONObject().put("recordId", expenseId).put("blocked", true))
+            // Keep acknowledgment blocked even if HttpURLConnection retries internally.
             Assert.assertFalse(runBlocking { app.repository.synchronize(client) })
             scenario.recreate(); awaitText("Edit entry")
             compose.onNodeWithContentDescription("Back").performClick(); awaitText("Add sale")
             compose.onNodeWithTag("sales-total").assertTextEquals("Rp 70.000")
+            Assert.assertTrue(client.post("/test/acknowledgments", JSONObject().put("recordId", expenseId).put("blocked", false)).body.getInt("attempts") > 0)
             Assert.assertTrue(runBlocking { app.repository.synchronize(client) })
             val persisted = client.get("/v1/daily?date=${businessToday()}").body
             Assert.assertEquals("70000", persisted.getJSONObject("totals").getString("sales"))
