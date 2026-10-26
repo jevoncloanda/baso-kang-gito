@@ -1,0 +1,289 @@
+openapi: 3.0.3
+info:
+  title: Baso Kang Gito API
+  version: 0.1.0
+  description: >-
+    Single-shop development notebook. Financial endpoints require an explicitly enabled
+    private development token and loopback-only hosting. Not production authentication.
+    Business dates use Asia/Jakarta; system audit timestamps are UTC. All monetary values
+    and sync cursors are decimal strings. Platform amounts are net after fees.
+servers:
+  - url: http://127.0.0.1:3000
+paths:
+  /health:
+    get:
+      operationId: getHealth
+      summary: Check API and PostgreSQL readiness
+      description: Read-only connectivity check. Does not certify migration state. No authentication. Responses are not cached. Retry 503 with backoff.
+      responses:
+        '200':
+          description: PostgreSQL accepted a query.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                additionalProperties: false
+                properties:
+                  status:
+                    type: string
+                    enum: [ok]
+              example: { status: ok }
+        '503':
+          description: PostgreSQL is unavailable; no internal connection details are exposed.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                additionalProperties: false
+                properties:
+                  status:
+                    type: string
+                    enum: [unavailable]
+              example: { status: unavailable }
+  /v1/operations:
+    post:
+      operationId: applyFinancialOperation
+      summary: Create/correct a sale or shopping entry, record a receipt, or void a mistake
+      security: [{developmentToken: []}]
+      description: >-
+        The operation UUID, financial mutation, audit snapshot, response and cursor commit atomically.
+        Retry the identical body/ID after a lost response; never generate another ID for a retry.
+        Reuse with different content returns 409. expectedVersion=0 creates; edits/receipts/voids
+        require the current root version and a nonempty reason. Conflicts never use last-write-wins.
+        One sale root includes its receipts; adding/voiding a receipt increments that root version.
+        save_sale creates an individual direct sale or one platform daily aggregate. paid=true
+        explicitly records money received and requires receiptId/method; platform defaults unpaid
+        in the client. Editing never changes receipts: omit paid/receiptId/method. Reducing below
+        allocations is rejected. Void the mistaken receipt explicitly, then record a correction.
+        Voiding a paid sale requires includeReceipts=true and reverses those receipts too.
+        Event deposits, refunds, POS writes and multi-sale settlement entry are not supported.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/Operation'}
+            examples:
+              paidSale:
+                value:
+                  id: 6f09c139-9077-40ca-9e82-9f9dce3d4e48
+                  recordId: c261405d-a9db-4fbb-90d9-31d924e60ebc
+                  expectedVersion: 0
+                  action: save_sale
+                  data: {date: '2026-10-26', channel: langsung, amount: '25000', paid: true, receiptId: 'b79950a4-4019-4c36-9e5b-40bb2dc66f39', method: cash}
+              platformSale:
+                value:
+                  id: 915952d3-53a2-4b42-b8cc-c406b264c30f
+                  recordId: d719052e-ae6d-42f0-aa29-f53c9da02c21
+                  expectedVersion: 0
+                  action: save_sale
+                  data: {date: '2026-10-26', channel: gofood, amount: '200000', paid: false}
+      responses:
+        '200':
+          description: Committed result, or the stored result of the identical operation. An upload cursor is not a download checkpoint.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [record, cursor]
+                properties:
+                  record: {$ref: '#/components/schemas/Record'}
+                  cursor: {type: string, pattern: '^[0-9]+$'}
+        '400': {$ref: '#/components/responses/Invalid'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/Invalid'}
+        '500': {$ref: '#/components/responses/Retryable'}
+  /v1/changes:
+    get:
+      operationId: downloadChanges
+      summary: Pull immutable full record snapshots in server commit order
+      security: [{developmentToken: []}]
+      description: >-
+        Start after=0. Persist snapshots and returned cursor in one local transaction.
+        Follow hasMore until false. Ignore older root versions, preserve local pending writes,
+        and retain tombstones. The stream is retained in full in Milestone 1; no cursor expiry.
+      parameters:
+        - {name: after, in: query, schema: {type: string, default: '0', pattern: '^[0-9]+$'}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 100}}
+      responses:
+        '200':
+          description: Ordered change page; cursor may stay unchanged for an empty page.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [changes, cursor, hasMore]
+                properties:
+                  cursor: {type: string}
+                  hasMore: {type: boolean}
+                  changes:
+                    type: array
+                    items:
+                      type: object
+                      required: [cursor, record]
+                      properties:
+                        cursor: {type: string}
+                        record: {$ref: '#/components/schemas/Record'}
+        '400': {$ref: '#/components/responses/Invalid'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+  /v1/records/{id}:
+    get:
+      operationId: getFinancialRecord
+      security: [{developmentToken: []}]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200':
+          description: Current full sale/receipt or expense/item snapshot, including voids.
+          content: {application/json: {schema: {$ref: '#/components/schemas/Record'}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/Invalid'}
+  /v1/daily:
+    get:
+      operationId: getDailyNotebook
+      security: [{developmentToken: []}]
+      parameters:
+        - {name: date, in: query, required: true, schema: {type: string, format: date}}
+        - {name: after, in: query, schema: {type: string, format: uuid}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 100}}
+      responses:
+        '200':
+          description: Matching roots (including receipts on this date), exact full-day totals, and nullable next UUID. Voided roots remain inspectable but do not contribute to totals.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  date: {type: string, format: date}
+                  totals: {$ref: '#/components/schemas/Totals'}
+                  next: {type: string, nullable: true}
+                  records: {type: array, items: {$ref: '#/components/schemas/Record'}}
+        '400': {$ref: '#/components/responses/Invalid'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+  /v1/monthly:
+    get:
+      operationId: getMonthlyRecap
+      security: [{developmentToken: []}]
+      parameters:
+        - {name: month, in: query, required: true, schema: {type: string, pattern: '^20[0-9]{2}-(0[1-9]|1[0-2])$'}}
+      responses:
+        '200':
+          description: Exact month totals, channel totals and daily sales/receipt/expense sums; cashDifference is receipts minus spending, not profit or cash balance.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  month: {type: string}
+                  totals: {$ref: '#/components/schemas/Totals'}
+                  days:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        date: {type: string, format: date}
+                        sales: {type: string}
+                        received: {type: string}
+                        expenses: {type: string}
+        '400': {$ref: '#/components/responses/Invalid'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+components:
+  securitySchemes:
+    developmentToken: {type: http, scheme: bearer, description: Private local-development token. Release synchronization is disabled until production authentication exists.}
+  responses:
+    Invalid:
+      description: Invalid input, missing record, or financial constraint. Do not retry unchanged; preserve the local operation for review.
+      content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}
+    Unauthorized:
+      description: Missing/invalid development token. Preserve pending operations and correct configuration.
+      content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}
+    Conflict:
+      description: Stale version, aggregate already exists, reused operation ID or duplicate identifier. current is supplied for version/aggregate conflicts when available. Review before replacing a local draft.
+      content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}
+    Retryable:
+      description: Unexpected server failure. Retry the identical operation ID/body with backoff; a prior commit may have succeeded.
+      content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}
+  schemas:
+    Amount: {type: string, pattern: '^[1-9][0-9]{0,11}$', description: 'Positive whole rupiah, at most 999999999999 per sale/item/receipt. Totals may be larger.'}
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: {type: string}
+        current: {$ref: '#/components/schemas/Record'}
+    Operation:
+      type: object
+      required: [id, recordId, expectedVersion, action, data]
+      properties:
+        id: {type: string, format: uuid}
+        recordId: {type: string, format: uuid}
+        expectedVersion: {type: integer, minimum: 0, maximum: 2147483646}
+        action: {type: string, enum: [save_sale, save_expense, add_receipt, void]}
+        data:
+          type: object
+          description: save_sale needs date/channel/amount and paid for creates; paid creates need receiptId/method. save_expense needs date/items (1–100). add_receipt needs id/date/amount/method. Corrections need reason (1–500 chars). void optionally targets receiptId or explicitly includes linked receipts. Items have stable UUIDs.
+          properties:
+            date: {type: string, format: date}
+            channel: {type: string, enum: [langsung, gofood, grabfood, shopeefood]}
+            amount: {$ref: '#/components/schemas/Amount'}
+            customer: {type: string, maxLength: 200}
+            note: {type: string, maxLength: 1000}
+            paid: {type: boolean}
+            id: {type: string, format: uuid}
+            receiptId: {type: string, format: uuid}
+            method: {type: string, enum: [cash, transfer]}
+            reason: {type: string, minLength: 1, maxLength: 500}
+            includeReceipts: {type: boolean}
+            items:
+              type: array
+              minItems: 1
+              maxItems: 100
+              items:
+                type: object
+                required: [id, name, amount]
+                properties:
+                  id: {type: string, format: uuid}
+                  name: {type: string, minLength: 1, maxLength: 200}
+                  amount: {$ref: '#/components/schemas/Amount'}
+    Record:
+      type: object
+      required: [id, kind, date, version, amount, note, voided]
+      properties:
+        id: {type: string, format: uuid}
+        kind: {type: string, enum: [sale, expense]}
+        date: {type: string, format: date}
+        version: {type: integer, minimum: 1}
+        amount: {type: string, pattern: '^[0-9]+$'}
+        note: {type: string}
+        voided: {type: boolean}
+        channel: {type: string, enum: [langsung, gofood, grabfood, shopeefood]}
+        origin: {type: string, enum: [manual, pos]}
+        entryKind: {type: string, enum: [individual, daily_aggregate]}
+        customer: {type: string}
+        items:
+          type: array
+          items: {type: object, required: [id, name, amount], properties: {id: {type: string, format: uuid}, name: {type: string}, amount: {type: string}}}
+        receipts:
+          type: array
+          items:
+            type: object
+            required: [id, date, amount, method, voided]
+            properties:
+              id: {type: string, format: uuid}
+              date: {type: string, format: date}
+              amount: {type: string}
+              method: {type: string, enum: [cash, transfer]}
+              voided: {type: boolean}
+    Totals:
+      type: object
+      required: [sales, received, expenses, cashDifference, byChannel]
+      properties:
+        sales: {type: string}
+        received: {type: string}
+        expenses: {type: string}
+        cashDifference: {type: string, description: Dated receipts minus paid shopping; not profit or a cash balance.}
+        byChannel:
+          type: array
+          items: {type: object, properties: {channel: {type: string}, amount: {type: string}}}

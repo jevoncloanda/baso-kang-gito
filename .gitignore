@@ -1,0 +1,16 @@
+.env
+.env.*
+!.env.example
+node_modules/
+dist/
+coverage/
+android/.gradle/
+android/.kotlin/
+android/**/build/
+android/local.properties
+.idea/
+*.iml
+*.jks
+*.keystore
+.DS_Store
+Thumbs.db
