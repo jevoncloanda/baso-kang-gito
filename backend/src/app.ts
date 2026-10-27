@@ -3,8 +3,9 @@ import type { Kysely } from 'kysely';
 import type { Database } from './database.js';
 import { FinancialError } from './bookkeeping.js';
 import { registerBookkeeping } from './bookkeeping-routes.js';
+import { AccessError, registerDeviceAccess } from './device-access.js';
 
-export function buildApp(checkDatabase: () => Promise<unknown>, logger = false, bookkeeping?: {db:Kysely<Database>;token:string}) {
+export function buildApp(checkDatabase: () => Promise<unknown>, logger = false, bookkeeping?: {db:Kysely<Database>}) {
   const app = Fastify({
     logger: logger ? {
       redact: ['req.headers.authorization', 'req.headers.cookie'],
@@ -23,9 +24,17 @@ export function buildApp(checkDatabase: () => Promise<unknown>, logger = false, 
     }
   });
 
-  if (bookkeeping) registerBookkeeping(app,bookkeeping.db,bookkeeping.token);
+  if (bookkeeping) {
+    registerDeviceAccess(app,bookkeeping.db);
+    registerBookkeeping(app,bookkeeping.db);
+  }
   app.setNotFoundHandler((_request, reply) => reply.code(404).send({ error: 'Not Found' }));
   app.setErrorHandler<FastifyError>((error, request, reply) => {
+    if (error instanceof AccessError) {
+      request.log.warn({event:error.code},'Device access refused');
+      if(error.status===429) reply.header('Retry-After','60');
+      return reply.code(error.status).send({error:error.code});
+    }
     if (error instanceof FinancialError) return reply.code(error.status).send({error:error.code,...(error.current?{current:error.current}:{})});
     if (error.validation || error.statusCode===400 || error.statusCode===413) return reply.code(error.statusCode??400).send({error:'invalid_request'});
     if (error.code==='23505') return reply.code(409).send({error:'duplicate_identifier'});

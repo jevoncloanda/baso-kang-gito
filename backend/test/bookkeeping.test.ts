@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { businessDate, jakartaDate, money } from '../src/bookkeeping.js';
-import { readBookkeepingConfig } from '../src/config.js';
+import { readTestControlConfig } from '../src/config.js';
 
 test('money and business dates reject lossy, invalid or overflowing input',()=>{
   assert.equal(money('999999999999'),'999999999999');
@@ -13,8 +13,8 @@ test('Jakarta business date crosses midnight independently of UTC and host timez
   assert.equal(jakartaDate(new Date('2026-10-31T16:59:59Z')),'2026-10-31');
   assert.equal(jakartaDate(new Date('2026-10-31T17:00:00Z')),'2026-11-01');
 });
-test('development financial API requires explicit configuration and never enables in production',()=>{
-  assert.equal(readBookkeepingConfig({}),null);
-  assert.throws(()=>readBookkeepingConfig({ENABLE_DEV_BOOKKEEPING:'true'}));
-  assert.throws(()=>readBookkeepingConfig({ENABLE_DEV_BOOKKEEPING:'true',BOOKKEEPING_DEV_TOKEN:'x'.repeat(32),NODE_ENV:'production'}));
+test('isolated test helper requires explicit configuration and is prohibited in production',()=>{
+  assert.equal(readTestControlConfig({}),null);
+  assert.throws(()=>readTestControlConfig({ENABLE_DEV_BOOKKEEPING:'true'}));
+  assert.throws(()=>readTestControlConfig({ENABLE_DEV_BOOKKEEPING:'true',BOOKKEEPING_DEV_TOKEN:'x'.repeat(32),NODE_ENV:'production'}));
 });

@@ -1,13 +1,15 @@
 // Private integration-test server: real PostgreSQL, fresh isolated schema, no business fixtures.
 import { randomUUID } from 'node:crypto';
 import { sql } from 'kysely';
-import { readConfig, readBookkeepingConfig } from '../src/config.js';
+import { readConfig, readTestControlConfig } from '../src/config.js';
 import { createDatabase } from '../src/database.js';
 import { createMigrator } from '../src/migrations.js';
 import { buildApp } from '../src/app.js';
 import { uuid } from '../src/bookkeeping.js';
+import { bootstrapFixture } from './access-fixture.js';
+import { issueBootstrap } from '../src/device-access.js';
 
-const config=readConfig(); const auth=readBookkeepingConfig(); if(!auth) throw Error('Configure private development token');
+const config=readConfig(); const auth=readTestControlConfig(); if(!auth) throw Error('Configure private development token');
 if(process.argv.includes('--stop')) {
   const response=await fetch('http://127.0.0.1:3001/test/shutdown',{method:'POST',headers:{authorization:`Bearer ${auth.token}`}});
   if(!response.ok)throw Error('Test server shutdown rejected');
@@ -18,7 +20,26 @@ const admin=createDatabase(config.databaseUrl); await sql`CREATE SCHEMA ${sql.id
 const url=new URL(config.databaseUrl);url.searchParams.set('options',`-c search_path=${schema}`);
 const db=createDatabase(url.toString());
 const migrated=await createMigrator(db,schema).migrateToLatest();if(migrated.error)throw migrated.error;
-const app=buildApp(async()=>{},false,{db,token:auth.token});
+const provisioning=buildApp(async()=>{},false,{db});
+const administrator=await bootstrapFixture(provisioning,db);
+await provisioning.close();
+const app=buildApp(async()=>{},false,{db});
+app.post('/test/bootstrap',async(request,reply)=>{
+  if(request.headers.authorization!==`Bearer ${auth.token}`)return reply.code(401).send({error:'unauthorized'});
+  return {token:await issueBootstrap(db,true)};
+});
+app.post('/test/enroll',async(request,reply)=>{
+  if(request.headers.authorization!==`Bearer ${auth.token}`)return reply.code(401).send({error:'unauthorized'});
+  const proof=(request.body as {credential?:unknown})?.credential;
+  if(typeof proof!=='string'||!/^([0-9a-f-]{36})\.([A-Za-z0-9_-]{43})$/.test(proof))return reply.code(400).send({error:'invalid_request'});
+  const headers={authorization:`Bearer ${proof}`};
+  const enrollment=await app.inject({method:'POST',url:'/v1/access/enrollments',headers,remoteAddress:`fixture-${proof.split('.')[0]}`,payload:{name:'Isolated Android fixture'}});
+  if(enrollment.statusCode!==200)return reply.code(enrollment.statusCode).send(enrollment.json());
+  const approved=await app.inject({method:'POST',url:`/v1/access/enrollments/${proof.split('.')[0]}/decision`,headers:{authorization:`Bearer ${administrator}`},payload:{approve:true,code:enrollment.json().code}});
+  if(approved.statusCode!==200)return reply.code(approved.statusCode).send(approved.json());
+  const completed=await app.inject({method:'POST',url:'/v1/access/enrollment/complete',headers,payload:{}});
+  return reply.code(completed.statusCode).send(completed.json());
+});
 // A transport may transparently retry a buffered POST. Block every acknowledgment
 // until the test explicitly releases it, rather than assuming exactly one attempt.
 const blockedAcknowledgments=new Set<string>();

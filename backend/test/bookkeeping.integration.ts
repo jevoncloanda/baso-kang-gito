@@ -6,6 +6,7 @@ import { createDatabase } from '../src/database.js';
 import { readConfig } from '../src/config.js';
 import { createMigrator } from '../src/migrations.js';
 import { buildApp } from '../src/app.js';
+import { bootstrapFixture, enrollFixture } from './access-fixture.js';
 
 test('financial operations, two independent clients, retries, conflicts and exact recaps', async t=>{
   const connection=readConfig().databaseUrl; const admin=createDatabase(connection);
@@ -13,9 +14,8 @@ test('financial operations, two independent clients, retries, conflicts and exac
   await sql`CREATE SCHEMA ${sql.id(schema)}`.execute(admin);
   const url=new URL(connection); url.searchParams.set('options',`-c search_path=${schema}`);
   const db=createDatabase(url.toString()); const otherDb=createDatabase(url.toString());
-  const token='test-development-token-'.repeat(2);
-  const clientA=buildApp(async()=>{},false,{db,token});
-  const clientB=buildApp(async()=>{},false,{db:otherDb,token});
+  const clientA=buildApp(async()=>{},false,{db});
+  const clientB=buildApp(async()=>{},false,{db:otherDb});
   t.after(async()=>{
     await clientA.close(); await clientB.close(); await db.destroy(); await otherDb.destroy();
     // Only the fresh, randomly named test schema is removed; business data is untouched.
@@ -24,9 +24,11 @@ test('financial operations, two independent clients, retries, conflicts and exac
   });
   const migration=await createMigrator(db,schema).migrateToLatest(); assert.equal(migration.error,undefined);
   assert.deepEqual((await createMigrator(db,schema).migrateToLatest()).results,[]);
+  const token=await bootstrapFixture(clientA,db);
+  const secondToken=await enrollFixture(clientB,token);
   const headers={authorization:`Bearer ${token}`,'content-type':'application/json'};
-  const post=async(op:unknown,client=clientA)=>client.inject({method:'POST',url:'/v1/operations',headers,payload:JSON.stringify(op)});
-  const get=async(url:string,client=clientA)=>client.inject({url,headers});
+  const post=async(op:unknown,client=clientA)=>client.inject({method:'POST',url:'/v1/operations',headers:{...headers,authorization:`Bearer ${client===clientA?token:secondToken}`},payload:JSON.stringify(op)});
+  const get=async(url:string,client=clientA)=>client.inject({url,headers:{authorization:`Bearer ${client===clientA?token:secondToken}`}});
   const sale=(paid:boolean,channel='langsung')=>({id:randomUUID(),action:'save_sale',recordId:randomUUID(),expectedVersion:0,
     data:{date:'2026-10-31',amount:'100000',channel,paid,...(paid?{receiptId:randomUUID(),method:'cash'}:{})}});
   const paid=sale(true); const unpaid=sale(false); const platform=sale(false,'gofood');

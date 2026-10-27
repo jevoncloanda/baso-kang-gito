@@ -6,6 +6,7 @@ import { buildApp } from '../src/app.js';
 import { readConfig } from '../src/config.js';
 import { createDatabase } from '../src/database.js';
 import { createMigrator } from '../src/migrations.js';
+import { bootstrapFixture, enrollFixture } from './access-fixture.js';
 
 test('customer migration, master records and Bon retain authoritative financial history across clients', async t => {
   const connection = readConfig().databaseUrl; const admin = createDatabase(connection);
@@ -13,17 +14,16 @@ test('customer migration, master records and Bon retain authoritative financial 
   await sql`CREATE SCHEMA ${sql.id(schema)}`.execute(admin);
   const url = new URL(connection); url.searchParams.set('options', `-c search_path=${schema}`);
   const db = createDatabase(url.toString()); const other = createDatabase(url.toString());
-  const token = 'customer-integration-private-token'.repeat(2);
-  const clientA = buildApp(async () => {}, false, { db, token });
-  const clientB = buildApp(async () => {}, false, { db: other, token });
+  const clientA = buildApp(async () => {}, false, { db });
+  const clientB = buildApp(async () => {}, false, { db: other });
   t.after(async () => {
     await clientA.close(); await clientB.close(); await db.destroy(); await other.destroy();
     assert.match(schema, /^customers_test_[a-f0-9]{32}$/);
     await sql`DROP SCHEMA ${sql.id(schema)} CASCADE`.execute(admin); await admin.destroy();
   });
-  const headers = { authorization: `Bearer ${token}`, 'content-type': 'application/json' };
-  const post = (op: unknown, client = clientA) => client.inject({ method: 'POST', url: '/v1/operations', headers, payload: JSON.stringify(op) });
-  const get = (path: string, client = clientA) => client.inject({ url: path, headers });
+  let token = ''; let secondToken = '';
+  const post = (op: unknown, client = clientA) => client.inject({ method: 'POST', url: '/v1/operations', headers: {authorization:`Bearer ${client===clientA?token:secondToken}`,'content-type':'application/json'}, payload: JSON.stringify(op) });
+  const get = (path: string, client = clientA) => client.inject({ url: path, headers: {authorization:`Bearer ${client===clientA?token:secondToken}`} });
   const master = (data: Record<string, unknown> = { name: 'Ibu % Sari', phone: '08123456789' }) => ({
     id: randomUUID(), recordId: randomUUID(), expectedVersion: 0, action: 'save_customer', data,
   });
@@ -41,6 +41,8 @@ test('customer migration, master records and Bon retain authoritative financial 
       VALUES(${legacyId}::uuid,'2026-10-30','langsung','manual','individual',100000,'Ibu % Sari',1)`.execute(db);
     assert.equal((await createMigrator(db, schema).migrateToLatest()).error, undefined);
     assert.deepEqual((await createMigrator(db, schema).migrateToLatest()).results, []);
+    token = await bootstrapFixture(clientA, db);
+    secondToken = await enrollFixture(clientB, token);
     const legacy = (await get(`/v1/records/${legacyId}`)).json();
     assert.equal(legacy.customer, 'Ibu % Sari'); assert.equal(legacy.customerId, null); assert.equal(legacy.amount, '100000');
     assert.deepEqual((await get('/v1/customers')).json().customers, []);

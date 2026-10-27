@@ -41,6 +41,7 @@ class FunctionalNotebookTest {
     @Test fun paidAndUnpaidSalesShoppingAndCorrectionUseRealRoomRecords() {
         runBlocking { app.repository.submitCustomer(newId(), 0, JSONObject().put("name", "Room Bon customer")) }
         ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+            compose.unlockNotebookFixture()
             scenario.onActivity { it.window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
             awaitText("Add sale")
             compose.onNodeWithText("Add sale").performScrollTo().performClick()
@@ -79,15 +80,15 @@ class FunctionalNotebookTest {
             Espresso.closeSoftKeyboard(); screenshot("shopping")
             compose.onNodeWithText("Save").performClick(); awaitText("Edit entry")
             Assert.assertEquals(175000L, runBlocking { app.repository.dao.records().map { BookRecord.parse(JSONObject(it.payload)) }.single { it.kind == "expense" }.amount })
-            val client = NotebookHttpClient("http://127.0.0.1:3001", BuildConfig.SYNC_TOKEN)
+            val client = enrolledTestClient()
             val expenseId = runBlocking { app.repository.dao.records().map { BookRecord.parse(JSONObject(it.payload)) }.single { it.kind == "expense" }.id }
-            client.post("/test/acknowledgments", JSONObject().put("recordId", expenseId).put("blocked", true))
+            testControlClient().post("/test/acknowledgments", JSONObject().put("recordId", expenseId).put("blocked", true))
             // Keep acknowledgment blocked even if HttpURLConnection retries internally.
             Assert.assertFalse(runBlocking { app.repository.synchronize(client) })
             scenario.recreate(); awaitText("Edit entry")
             compose.onNodeWithContentDescription("Back").performClick(); awaitText("Add sale")
             compose.onNodeWithTag("sales-total").assertTextEquals("Rp 70.000")
-            Assert.assertTrue(client.post("/test/acknowledgments", JSONObject().put("recordId", expenseId).put("blocked", false)).body.getInt("attempts") > 0)
+            Assert.assertTrue(testControlClient().post("/test/acknowledgments", JSONObject().put("recordId", expenseId).put("blocked", false)).body.getInt("attempts") > 0)
             Assert.assertTrue(runBlocking { app.repository.synchronize(client) })
             val persisted = client.get("/v1/daily?date=${businessToday()}").body
             Assert.assertEquals("70000", persisted.getJSONObject("totals").getString("sales"))
@@ -102,6 +103,7 @@ class FunctionalNotebookTest {
 
     @Test fun customerCreationFromSalePreservesPartialDraftAndCustomerSearchEditArchiveWorks() {
         ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+            compose.unlockNotebookFixture()
             awaitText("Add sale"); compose.onNodeWithText("Add sale").performScrollTo().performClick()
             compose.onNodeWithText("Sale amount").performTextInput("100000")
             compose.onNodeWithText("Amount received now (optional)").performScrollTo().performTextInput("40000")

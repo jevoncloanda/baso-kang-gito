@@ -71,7 +71,7 @@ class NotebookProcessTest {
                 assertEquals(WorkInfo.State.ENQUEUED, WorkManager.getInstance(context).getWorkInfoById(workId).get()!!.state)
                 assertFalse(repository.synchronize(NotebookHttpClient("http://127.0.0.1:1", BuildConfig.SYNC_TOKEN)))
                 assertEquals(pending.operationId, repository.dao.nextOperation()!!.operationId)
-                assertTrue(repository.synchronize(NotebookHttpClient("http://127.0.0.1:3001", BuildConfig.SYNC_TOKEN)))
+                assertTrue(repository.synchronize(enrolledTestClient()))
                 assertTrue(repository.dao.activeFor(pending.recordId).isEmpty())
                 assertEquals(120000L, RecoveredEdit.parse(repository.dao.meta("recoveredEdit")!!).local.amount)
                 WorkManager.getInstance(context).cancelWorkById(workId).result.get()

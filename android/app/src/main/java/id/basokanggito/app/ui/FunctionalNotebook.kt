@@ -36,6 +36,7 @@ internal fun presentation(state: NotebookState): List<JournalEntry> = state.reco
 @Composable
 fun FunctionalNotebook() {
     val context = LocalContext.current
+    val accessState by (context.applicationContext as NotebookApplication).access.state.collectAsState()
     val repository = (context.applicationContext as NotebookApplication).repository
     val model: NotebookViewModel = viewModel(factory = remember(repository) { object : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST") override fun <T : ViewModel> create(modelClass: Class<T>): T = NotebookViewModel(repository) as T
@@ -47,6 +48,7 @@ fun FunctionalNotebook() {
     val error by model.error.collectAsState()
     var route by rememberSaveable { mutableStateOf("journal") }
     var showBackup by rememberSaveable { mutableStateOf(false) }
+    var securityScreen by rememberSaveable { mutableStateOf("") }
     var dateText by rememberSaveable { mutableStateOf(businessToday().toString()) }
     var monthText by rememberSaveable { mutableStateOf(YearMonth.from(businessToday()).toString()) }
     var selectedId by rememberSaveable { mutableStateOf("") }
@@ -103,16 +105,19 @@ fun FunctionalNotebook() {
     }
     LaunchedEffect(state.loaded, state.meta["restoredAt"]) {
         if (state.loaded && !draftLoaded) {
-            if (state.meta["restoredAt"] != null) {
+            // A retained StateFlow can still contain the previous draft immediately after recreation.
+            // Wait for queued draft writes and read Room before initializing the restored form.
+            val metadata = model.withDrafts { repository.dao.metadata().associate { it.key to it.value } }
+            if (metadata["restoredAt"] != null) {
                 route = "journal"; selectedId = ""; selectedCustomerId = ""; customerDraft = ""
                 sale = SaleDraft(); expense = arrayListOf(ExpenseDraftLine(newId()))
                 draftKind = ""; recoveredEdit = ""; reason = ""; baseVersion = 0; recordId = newId()
                 receiptAmount = ""; receiptId = newId()
             }
-            val recovered = state.meta["recoveredEdit"]?.takeIf { it.isNotEmpty() }
+            val recovered = metadata["recoveredEdit"]?.takeIf { it.isNotEmpty() }
             if (recovered != null) {
                 runCatching { restoreEdit(RecoveredEdit.parse(recovered)) }.onFailure { model.error.value = "draft_unreadable" }
-            } else state.meta["draft"]?.takeIf { it.isNotEmpty() }?.let { raw ->
+            } else metadata["draft"]?.takeIf { it.isNotEmpty() }?.let { raw ->
                 runCatching {
                     val draft = JSONObject(raw); val s = draft.getJSONObject("sale")
                     recoveredEdit = draft.optJSONObject("recoveredEdit")?.toString().orEmpty()
@@ -126,10 +131,10 @@ fun FunctionalNotebook() {
                     if (baseVersion == 0 && state.records.any { it.id == recordId }) { selectedId = recordId; route = "detail" }
                 }.onFailure { model.error.value = "draft_unreadable" }
             }
-            state.meta["paymentRecovery"]?.takeIf { it.isNotEmpty() }?.let { raw ->
+            metadata["paymentRecovery"]?.takeIf { it.isNotEmpty() }?.let { raw ->
                 runCatching { restorePayment(JSONObject(raw)) }.onFailure { model.error.value = "draft_unreadable" }
             }
-            state.meta["customerDraft"]?.takeIf { it.isNotEmpty() }?.let { raw ->
+            metadata["customerDraft"]?.takeIf { it.isNotEmpty() }?.let { raw ->
                 runCatching { JSONObject(raw).getString("id"); customerDraft = raw; route = "customer_form" }.onFailure { model.error.value = "draft_unreadable" }
             }
             draftLoaded = true
@@ -175,7 +180,9 @@ fun FunctionalNotebook() {
         } else if (draftKind != kind) { recordId = newId(); baseVersion = 0; reason = ""; recoveredEdit = "" }
         draftKind = kind; route = kind; persist()
     }
-    BackHandler(!showBackup && (route !in listOf("journal", "recap", "customers") || (route == "customers" && selectedCustomerId.isNotEmpty())) && !saving, ::back)
+    BackHandler(!showBackup && securityScreen.isEmpty() && (route !in listOf("journal", "recap", "customers") || (route == "customers" && selectedCustomerId.isNotEmpty())) && !saving, ::back)
+    if (securityScreen == "pin") { ChangePinScreen({ securityScreen = "" }); return }
+    if (securityScreen == "devices") { DeviceManagementScreen({ securityScreen = "" }); return }
     if (showBackup) { BackupScreen(model) { showBackup = false }; return }
     if (!state.loaded || !draftLoaded) { Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }; return }
     if (state.unreadable || error == "draft_unreadable") { Text(stringResource(if (state.unreadable) R.string.storage_unreadable else R.string.draft_unreadable), Modifier.padding(24.dp)); return }
@@ -208,6 +215,8 @@ fun FunctionalNotebook() {
                             TextButton(onClick = { utilities = true }) { Text(stringResource(R.string.backup_menu)) }
                             DropdownMenu(expanded = utilities, onDismissRequest = { utilities = false }) {
                                 DropdownMenuItem(text = { Text(stringResource(R.string.backup_title)) }, onClick = { utilities = false; keyboard?.hide(); showBackup = true })
+                                DropdownMenuItem(text = { Text(stringResource(R.string.pin_change)) }, onClick = { utilities = false; keyboard?.hide(); securityScreen = "pin" })
+                                if (accessState.role == "admin") DropdownMenuItem(text = { Text(stringResource(R.string.access_devices)) }, onClick = { utilities = false; keyboard?.hide(); securityScreen = "devices" })
                             }
                         }
                     }

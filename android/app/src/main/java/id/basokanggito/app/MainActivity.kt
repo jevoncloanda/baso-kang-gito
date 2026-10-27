@@ -8,8 +8,13 @@ import androidx.activity.enableEdgeToEdge
 import id.basokanggito.app.ui.BasoTheme
 import id.basokanggito.app.ui.FunctionalNotebook
 import id.basokanggito.app.ui.localizedAppContext
+import id.basokanggito.app.ui.AccessGate
+import id.basokanggito.app.data.AccessViewModel
+import androidx.lifecycle.ViewModelProvider
+import android.view.WindowManager
 
 class MainActivity : ComponentActivity() {
+    private val accessModel by lazy { ViewModelProvider(this)[AccessViewModel::class.java] }
     override fun attachBaseContext(newBase: Context) {
         super.attachBaseContext(localizedAppContext(newBase))
     }
@@ -20,6 +25,9 @@ class MainActivity : ComponentActivity() {
         super.onCreate(if (presentation.getBoolean("functional", false)) savedInstanceState else null)
         presentation.edit().putBoolean("functional", true).apply()
         enableEdgeToEdge()
-        setContent { BasoTheme { FunctionalNotebook() } }
+        window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        setContent { BasoTheme { AccessGate(accessModel) { FunctionalNotebook() } } }
     }
+    override fun onStart() { super.onStart(); accessModel.foreground() }
+    override fun onStop() { if (!isChangingConfigurations) accessModel.background(); super.onStop() }
 }

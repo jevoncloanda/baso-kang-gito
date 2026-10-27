@@ -117,6 +117,7 @@ class BackupUiTest {
 
     @Test fun passwordSurvivesActivityRecreationWithoutBeingStoredAsNotebookData() {
         ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+            compose.unlockNotebookFixture()
             compose.waitUntil(10_000) { compose.onAllNodesWithText("Tools").fetchSemanticsNodes().isNotEmpty() }
             compose.onNodeWithText("Tools").performClick()
             compose.onNodeWithText("Backup & restore").performClick()

@@ -193,6 +193,7 @@ class MainActivityTest {
 
     @Test fun realActivityKeepsDraftThroughLandscapeRecreation() {
         ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+            compose.unlockNotebookFixture()
             scenario.onActivity { it.window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
             compose.waitUntil(10_000) { compose.onAllNodesWithText("Add sale").fetchSemanticsNodes().isNotEmpty() }
             compose.onNodeWithText("Add sale").performScrollTo().performClick()
@@ -243,6 +244,7 @@ class MainActivityTest {
         try {
             manager.applicationLocales = LocaleList.forLanguageTags("en")
             ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+            compose.unlockNotebookFixture()
                 scenario.onActivity { it.window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
                 compose.waitUntil(10_000) { compose.onAllNodesWithText("Add sale").fetchSemanticsNodes().isNotEmpty() }
                 compose.onNodeWithText("Add sale").performScrollTo().performClick()

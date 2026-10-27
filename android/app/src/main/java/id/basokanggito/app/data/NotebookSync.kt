@@ -14,7 +14,7 @@ import java.net.URL
 import java.util.concurrent.TimeUnit
 
 data class HttpResult(val status: Int, val body: JSONObject)
-class NotebookHttpClient(private val baseUrl: String, private val token: String) {
+class NotebookHttpClient(private val baseUrl: String, private val token: String, private val onAccessError: (Int, JSONObject) -> Unit = { _, _ -> }) {
     fun upload(operation: JSONObject) = request("/v1/operations", operation.toString())
     fun post(path: String, body: JSONObject) = request(path, body.toString())
     fun download(cursor: String) = request("/v1/changes?after=$cursor&limit=100")
@@ -36,12 +36,15 @@ class NotebookHttpClient(private val baseUrl: String, private val token: String)
             val text = stream?.bufferedReader()?.use { reader ->
                 val value = reader.readText(); if (value.length > 2_000_000) throw IOException("response_too_large"); value
             } ?: throw IOException("empty_response")
-            return HttpResult(status, JSONObject(text))
+            val result = JSONObject(text)
+            if (status == 401 || status == 403) onAccessError(status, result)
+            return HttpResult(status, result)
         } finally { connection.disconnect() }
     }
 }
 
 open class NotebookApplication : Application() {
+    val access: DeviceAccess by lazy { DeviceAccess(this) }
     open val backgroundSyncEnabled: Boolean get() = syncConfigured()
     // A single explicit construction point; instrumentation overrides it with an isolated database.
     open val repository: NotebookRepository by lazy {
@@ -61,9 +64,11 @@ open class NotebookApplication : Application() {
         }
     }
 }
-fun syncConfigured() = BuildConfig.DEBUG && BuildConfig.SYNC_TOKEN.isNotEmpty() && BuildConfig.SYNC_URL == "http://127.0.0.1:3000"
+fun syncConfigured() = BuildConfig.SYNC_URL.startsWith("https://") || (BuildConfig.DEBUG &&
+    (BuildConfig.SYNC_URL == "http://127.0.0.1:3000" || (BuildConfig.BUILD_TYPE == "validation" && BuildConfig.SYNC_URL == "http://127.0.0.1:3001")))
 fun scheduleSync(context: Context) {
     if (!syncConfigured()) return
+    if ((context.applicationContext as? NotebookApplication)?.backgroundSyncEnabled == false) return
     WorkManager.getInstance(context).enqueueUniqueWork("notebook-sync", ExistingWorkPolicy.APPEND_OR_REPLACE,
         OneTimeWorkRequestBuilder<NotebookSyncWorker>()
             .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
@@ -72,7 +77,9 @@ fun scheduleSync(context: Context) {
 class NotebookSyncWorker(context: Context, parameters: WorkerParameters) : CoroutineWorker(context, parameters) {
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         if (!syncConfigured()) return@withContext Result.success()
-        val repository = (applicationContext as NotebookApplication).repository
-        if (repository.synchronize(NotebookHttpClient(BuildConfig.SYNC_URL, BuildConfig.SYNC_TOKEN))) Result.success() else Result.retry()
+        val app = applicationContext as NotebookApplication
+        if (!app.access.usable()) return@withContext Result.success()
+        if (app.repository.synchronize(app.access.client())) Result.success()
+        else if (!app.access.usable()) Result.success() else Result.retry()
     }
 }

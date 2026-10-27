@@ -33,7 +33,7 @@ import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
 
 @Composable
-fun BackupScreen(model: NotebookViewModel, onBack: () -> Unit) {
+fun BackupScreen(model: NotebookViewModel, restoreOnly: Boolean = false, onBack: () -> Unit) {
     val host = LocalContext.current
     val context = host.applicationContext
     val backup: BackupViewModel = viewModel(key = "backup", factory = remember(model) { object : ViewModelProvider.Factory {
@@ -78,7 +78,7 @@ fun BackupScreen(model: NotebookViewModel, onBack: () -> Unit) {
             Text(stringResource(R.string.backup_title), style = MaterialTheme.typography.headlineMedium)
             Text(stringResource(R.string.backup_explanation))
             Text(stringResource(R.string.backup_password_warning))
-            notebook.meta["lastBackupAt"]?.let { raw ->
+            notebook.meta["lastBackupAt"]?.takeUnless { restoreOnly }?.let { raw ->
                 runCatching { DateTimeFormatter.ofLocalizedDateTime(FormatStyle.MEDIUM).withZone(ZoneId.systemDefault()).format(Instant.parse(raw)) }.getOrNull()?.let { date ->
                     Text(stringResource(R.string.backup_last_saved, date))
                     Text(stringResource(R.string.backup_last_caveat), style = MaterialTheme.typography.bodySmall)
@@ -99,11 +99,11 @@ fun BackupScreen(model: NotebookViewModel, onBack: () -> Unit) {
                     visualTransformation = if (visible) VisualTransformation.None else PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
                     trailingIcon = { TextButton(onClick = { visible = !visible }, modifier = Modifier.heightIn(min = 48.dp)) { Text(stringResource(if (visible) R.string.backup_hide else R.string.backup_show)) } },
                     modifier = Modifier.fillMaxWidth().testTag("backup_password"))
-                if (selected == null) {
+                if (selected == null && !restoreOnly) {
                     OutlinedTextField(value = confirmation, onValueChange = { backup.confirmation.value = it }, label = { Text(stringResource(R.string.backup_confirm_password)) }, singleLine = true, enabled = !busy,
                         visualTransformation = if (visible) VisualTransformation.None else PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password), modifier = Modifier.fillMaxWidth().testTag("backup_password_confirmation"))
                     Button(onClick = backup::create, enabled = !busy, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp).testTag("backup_create")) { Text(stringResource(R.string.backup_create)) }
-                } else {
+                } else if (selected != null) {
                     Button(onClick = backup::inspect, enabled = !busy, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp).testTag("backup_inspect")) { Text(stringResource(R.string.backup_inspect)) }
                     TextButton(onClick = backup::cancel, enabled = !busy, modifier = Modifier.heightIn(min = 48.dp)) { Text(stringResource(R.string.backup_cancel)) }
                 }

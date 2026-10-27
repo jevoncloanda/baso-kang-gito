@@ -1,4 +1,5 @@
 import java.util.Properties
+import java.net.URI
 
 plugins {
     id("com.android.application")
@@ -29,16 +30,26 @@ android {
     buildTypes {
         getByName("debug") {
             buildConfigField("String", "SYNC_URL", "\"http://127.0.0.1:3000\"")
-            buildConfigField("String", "SYNC_TOKEN", "\"${localConfig.getProperty("bookkeeping.devToken", "")}\"")
+            // Legacy value is validation-helper control only; never authenticates financial routes.
+            buildConfigField("String", "SYNC_TOKEN", "\"\"")
         }
         getByName("release") {
-            buildConfigField("String", "SYNC_URL", "\"\"")
+            val apiUrl = localConfig.getProperty("bookkeeping.apiUrl", "")
+            val endpoint = runCatching { URI(apiUrl) }.getOrNull()
+            require(apiUrl.isEmpty() || (endpoint?.scheme == "https" && !endpoint.host.isNullOrBlank() &&
+                endpoint.rawUserInfo == null && endpoint.rawQuery == null && endpoint.rawFragment == null && endpoint.rawPath in listOf("", "/"))) { "Release API must be an HTTPS origin without credentials, query or fragment" }
+            buildConfigField("String", "SYNC_URL", "\"${apiUrl.trimEnd('/')}\"")
             buildConfigField("String", "SYNC_TOKEN", "\"\"")
         }
         create("validation") {
             initWith(getByName("debug"))
-            applicationIdSuffix = ".validation"
+            // Separate from older validation APKs signed on another development host.
+            applicationIdSuffix = ".access.validation"
             matchingFallbacks += "debug"
+            buildConfigField("String", "SYNC_URL", "\"http://127.0.0.1:3001\"")
+            val controlToken = localConfig.getProperty("bookkeeping.devToken", "")
+            require(controlToken.isEmpty() || controlToken.matches(Regex("[A-Za-z0-9_-]{32,128}"))) { "Invalid isolated test-control token" }
+            buildConfigField("String", "SYNC_TOKEN", "\"$controlToken\"")
         }
     }
     // Connected-test cleanup must never uninstall the real notebook or remove its database.

@@ -57,7 +57,7 @@ class NotebookDataTest {
         check(BuildConfig.SYNC_TOKEN.isNotEmpty()) { "Private integration API token is required" }
         val firstName = "test-client-a-${newId()}.db"; val secondName = "test-client-b-${newId()}.db"
         var firstDb = database(firstName); val secondDb = database(secondName)
-        val client = NotebookHttpClient("http://127.0.0.1:3001", BuildConfig.SYNC_TOKEN)
+        val client = enrolledTestClient()
         try {
             var first = NotebookRepository(firstDb); val second = NotebookRepository(secondDb)
             val expenseId = newId(); val paidId = newId(); val unpaidId = newId()
@@ -67,14 +67,14 @@ class NotebookDataTest {
             assertEquals(3, first.dao.allOperations().size)
             assertFalse(first.synchronize(NotebookHttpClient("http://127.0.0.1:1", BuildConfig.SYNC_TOKEN)))
             assertEquals(3, first.dao.allOperations().count { it.state == "pending" })
-            client.post("/test/acknowledgments", JSONObject().put("recordId", expenseId).put("blocked", true))
+            testControlClient().post("/test/acknowledgments", JSONObject().put("recordId", expenseId).put("blocked", true))
             // All automatic transport retries commit/replay but cannot acknowledge yet.
             assertFalse(first.synchronize(client))
             val pendingId = first.dao.nextOperation()!!.operationId
             assertEquals(175000L, BookRecord.parse(client.get("/v1/records/$expenseId").body).amount)
             firstDb.close(); firstDb = database(firstName); first = NotebookRepository(firstDb)
             assertEquals(pendingId, first.dao.nextOperation()!!.operationId)
-            assertTrue(client.post("/test/acknowledgments", JSONObject().put("recordId", expenseId).put("blocked", false)).body.getInt("attempts") > 0)
+            assertTrue(testControlClient().post("/test/acknowledgments", JSONObject().put("recordId", expenseId).put("blocked", false)).body.getInt("attempts") > 0)
             assertTrue(first.synchronize(client)); assertTrue(second.synchronize(client))
             assertEquals(3, second.dao.records().count { it.date == "2091-01-31" })
             val postgres = client.get("/v1/daily?date=2091-01-31").body
@@ -122,7 +122,7 @@ class NotebookDataTest {
             assertTrue(second.dao.allOperations().any { it.state == "reviewed" })
             val badAuthId = newId(); second.submit("save_sale", badAuthId, 0, sale(date = "2091-02-01"))
             assertFalse(second.synchronize(NotebookHttpClient("http://127.0.0.1:3001", "wrong-token")))
-            assertTrue(second.dao.activeFor(badAuthId).any { it.error == "unauthorized" })
+            assertTrue(second.dao.activeFor(badAuthId).all { it.state == "pending" }); assertEquals("unauthorized", second.dao.meta("syncError"))
             second.retryFailed(); assertTrue(second.synchronize(client))
             assertTrue(second.dao.activeFor(badAuthId).isEmpty())
             // Server validation failure is retained for review, then corrected explicitly.

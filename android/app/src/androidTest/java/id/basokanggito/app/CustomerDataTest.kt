@@ -22,7 +22,7 @@ class CustomerDataTest {
     @Test fun conflictingOfflineInstallmentsReopenOneAtATimeWithoutLosingLaterInput() = runBlocking {
         val name = "test-payment-recovery-${newId()}.db"; var db = database(name)
         val otherDb = Room.inMemoryDatabaseBuilder(context, NotebookDatabase::class.java).build()
-        val client = NotebookHttpClient("http://127.0.0.1:3001", BuildConfig.SYNC_TOKEN)
+        val client = enrolledTestClient()
         try {
             var first = NotebookRepository(db); val second = NotebookRepository(otherDb); val customerId = newId(); val id = newId()
             first.submitCustomer(customerId, 0, customer("Installment recovery"))
@@ -63,7 +63,7 @@ class CustomerDataTest {
 
     @Test fun recoveredCustomerCreationUploadsBeforeItsEarlierDependentSale() = runBlocking {
         val db = Room.inMemoryDatabaseBuilder(context, NotebookDatabase::class.java).build()
-        val client = NotebookHttpClient("http://127.0.0.1:3001", BuildConfig.SYNC_TOKEN)
+        val client = enrolledTestClient()
         try {
             val repository = NotebookRepository(db); val id = newId(); val saleId = newId()
             repository.submitCustomer(id, 0, customer("Recovered dependency"))
@@ -135,7 +135,7 @@ class CustomerDataTest {
         check(BuildConfig.SYNC_TOKEN.isNotEmpty())
         val firstName = "test-customer-a-${newId()}.db"; val secondName = "test-customer-b-${newId()}.db"
         var firstDb = database(firstName); val secondDb = database(secondName)
-        val client = NotebookHttpClient("http://127.0.0.1:3001", BuildConfig.SYNC_TOKEN)
+        val client = enrolledTestClient()
         try {
             var first = NotebookRepository(firstDb); val second = NotebookRepository(secondDb)
             val id = newId(); val independent = newId(); val saleId = newId()
@@ -149,12 +149,12 @@ class CustomerDataTest {
             // Commit a payment while suppressing its acknowledgment, then reopen the durable client.
             first.submit("add_receipt", saleId, 2, payment("10000"))
             val lost = first.dao.activeFor(saleId).single()
-            client.post("/test/acknowledgments", JSONObject().put("recordId", saleId).put("blocked", true))
+            testControlClient().post("/test/acknowledgments", JSONObject().put("recordId", saleId).put("blocked", true))
             assertFalse(first.synchronize(client)); assertEquals(50000L, BookRecord.parse(client.get("/v1/records/$saleId").body).received)
             firstDb.close(); firstDb = database(firstName); first = NotebookRepository(firstDb)
             assertEquals(lost.operationId, first.dao.activeFor(saleId).single().operationId)
             assertEquals(lost.payload, first.dao.activeFor(saleId).single().payload)
-            client.post("/test/acknowledgments", JSONObject().put("recordId", saleId).put("blocked", false))
+            testControlClient().post("/test/acknowledgments", JSONObject().put("recordId", saleId).put("blocked", false))
             assertTrue(first.synchronize(client)); assertTrue(second.synchronize(client))
             assertEquals(2, BookRecord.parse(JSONObject(second.dao.record(saleId)!!.payload)).receipts.size)
             // Concurrent customer edits preserve local input until explicit reopening.

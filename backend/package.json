@@ -11,7 +11,8 @@
     "start": "node --env-file-if-exists=../.env dist/server.js",
     "test": "node --import tsx --test test/*.test.ts",
     "test:integration": "node --env-file=../.env --import tsx --test test/*.integration.ts",
-    "db:migrate": "npm run build && node --env-file-if-exists=../.env dist/migrate.js"
+    "db:migrate": "npm run build && node --env-file-if-exists=../.env dist/migrate.js",
+    "access:bootstrap": "node --env-file-if-exists=../.env dist/bootstrap.js"
   },
   "dependencies": {
     "fastify": "^5.6.0",

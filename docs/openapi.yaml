@@ -1,10 +1,10 @@
 openapi: 3.0.3
 info:
   title: Baso Kang Gito API
-  version: 0.2.0
+  version: 0.3.0
   description: >-
-    Single-shop development notebook. Financial endpoints require an explicitly enabled
-    private development token and loopback-only hosting. Not production authentication.
+    Single-shop notebook. Financial endpoints require a unique approved installation bearer credential.
+    HTTPS is mandatory for remote deployment; loopback HTTP is development-only.
     Business dates use Asia/Jakarta; system audit timestamps are UTC. All monetary values
     and sync cursors are decimal strings. Platform amounts are net after fees.
     Optional createdAt values are immutable server creation timestamps for presentation,
@@ -49,7 +49,7 @@ paths:
     post:
       operationId: applyFinancialOperation
       summary: Create/correct a sale or shopping entry, record a receipt, or void a mistake
-      security: [{developmentToken: []}]
+      security: [{deviceToken: []}]
       description: >-
         The operation UUID, financial mutation, audit snapshot, response and cursor commit atomically.
         Retry the identical body/ID after a lost response; never generate another ID for a retry.
@@ -120,6 +120,8 @@ paths:
                   cursor: {type: string, pattern: '^[0-9]+$'}
         '400': {$ref: '#/components/responses/Invalid'}
         '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/AccessForbidden'}
+        '429': {$ref: '#/components/responses/AccessLimited'}
         '409': {$ref: '#/components/responses/Conflict'}
         '422': {$ref: '#/components/responses/Invalid'}
         '500': {$ref: '#/components/responses/Retryable'}
@@ -127,7 +129,7 @@ paths:
     get:
       operationId: downloadChanges
       summary: Pull immutable full record snapshots in server commit order
-      security: [{developmentToken: []}]
+      security: [{deviceToken: []}]
       description: >-
         Start after=0. Persist snapshots and returned cursor in one local transaction.
         Follow hasMore until false. Ignore older root versions, preserve local pending writes,
@@ -158,11 +160,13 @@ paths:
                         record: {$ref: '#/components/schemas/Snapshot'}
         '400': {$ref: '#/components/responses/Invalid'}
         '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/AccessForbidden'}
+        '429': {$ref: '#/components/responses/AccessLimited'}
   /v1/customers:
     get:
       operationId: listCustomers
       summary: Search customers by literal name or phone substring with exact outstanding balances
-      security: [{developmentToken: []}]
+      security: [{deviceToken: []}]
       parameters:
         - {name: q, in: query, schema: {type: string, maxLength: 200}}
         - {name: archived, in: query, description: Include archived customers, schema: {type: boolean, default: false}}
@@ -186,11 +190,13 @@ paths:
                         - {type: object, required: [outstanding], properties: {outstanding: {type: string, pattern: '^[0-9]+$'}}}
         '400': {$ref: '#/components/responses/Invalid'}
         '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/AccessForbidden'}
+        '429': {$ref: '#/components/responses/AccessLimited'}
   /v1/customers/{id}:
     get:
       operationId: getCustomerHistory
       summary: Customer details, whole-customer balance and paged related sale/payment history
-      security: [{developmentToken: []}]
+      security: [{deviceToken: []}]
       parameters:
         - {name: id, in: path, required: true, schema: {type: string, format: uuid}}
         - {name: after, in: query, schema: {type: string, format: uuid}}
@@ -210,11 +216,13 @@ paths:
                   records: {type: array, items: {$ref: '#/components/schemas/Record'}}
         '400': {$ref: '#/components/responses/Invalid'}
         '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/AccessForbidden'}
+        '429': {$ref: '#/components/responses/AccessLimited'}
         '404': {$ref: '#/components/responses/Invalid'}
   /v1/records/{id}:
     get:
       operationId: getFinancialRecord
-      security: [{developmentToken: []}]
+      security: [{deviceToken: []}]
       parameters:
         - {name: id, in: path, required: true, schema: {type: string, format: uuid}}
       responses:
@@ -222,11 +230,13 @@ paths:
           description: Current full sale/receipt or expense/item snapshot, including voids.
           content: {application/json: {schema: {$ref: '#/components/schemas/Record'}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/AccessForbidden'}
+        '429': {$ref: '#/components/responses/AccessLimited'}
         '404': {$ref: '#/components/responses/Invalid'}
   /v1/daily:
     get:
       operationId: getDailyNotebook
-      security: [{developmentToken: []}]
+      security: [{deviceToken: []}]
       parameters:
         - {name: date, in: query, required: true, schema: {type: string, format: date}}
         - {name: after, in: query, schema: {type: string, format: uuid}}
@@ -245,10 +255,12 @@ paths:
                   records: {type: array, items: {$ref: '#/components/schemas/Record'}}
         '400': {$ref: '#/components/responses/Invalid'}
         '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/AccessForbidden'}
+        '429': {$ref: '#/components/responses/AccessLimited'}
   /v1/monthly:
     get:
       operationId: getMonthlyRecap
-      security: [{developmentToken: []}]
+      security: [{deviceToken: []}]
       parameters:
         - {name: month, in: query, required: true, schema: {type: string, pattern: '^20[0-9]{2}-(0[1-9]|1[0-2])$'}}
       responses:
@@ -272,15 +284,202 @@ paths:
                         expenses: {type: string}
         '400': {$ref: '#/components/responses/Invalid'}
         '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/AccessForbidden'}
+        '429': {$ref: '#/components/responses/AccessLimited'}
+  /v1/access/bootstrap:
+    post:
+      operationId: bootstrapAdministrator
+      summary: Consume an operator-issued one-time token for this installation
+      description: >-
+        Provide a locally generated UUID and 32 random bytes as Bearer UUID.base64urlSecret.
+        Persist proof before sending. CLI token expires in ten minutes; only its hash is stored.
+        Atomic single use; identical proof can retry within expiry. After a lost response use /me
+        with the persisted proof even after expiry. New first administrators cannot self-elect.
+        Five attempts per IP per minute and thirty globally. Recovery token issuance requires operator database authority.
+      security: [{deviceToken: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, token]
+              properties:
+                name: {type: string, minLength: 1, maxLength: 80}
+                token: {type: string, pattern: '^[A-Za-z0-9_-]{43}$'}
+      responses:
+        '200': {description: 'Active administrator identity. Response contains id, role=admin, state=active; no secret is returned.'}
+        '400': {$ref: '#/components/responses/Invalid'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '429': {$ref: '#/components/responses/AccessLimited'}
+  /v1/access/enrollments:
+    post:
+      operationId: requestDeviceEnrollment
+      summary: Request approval for a specific installation proof
+      description: >-
+        Proof is not yet trusted. Generate and persist UUID plus 32 random bytes before initiation.
+        Returns id, six-digit code, state. Exact id/proof/name/purpose replay returns the same request.
+        Different proof or metadata under the same ID returns 409. Ten-minute expiry; five initiations
+        per IP per minute and thirty globally. Matching a name/code never grants trust by itself.
+      security: [{deviceToken: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: {type: string, minLength: 1, maxLength: 80}
+                purpose: {type: string, enum: [device, pin_recovery], default: device}
+      responses:
+        '200': {$ref: '#/components/responses/EnrollmentStatus'}
+        '400': {$ref: '#/components/responses/Invalid'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '429': {$ref: '#/components/responses/AccessLimited'}
+  /v1/access/enrollment/status:
+    post:
+      operationId: checkDeviceEnrollment
+      summary: Read only the enrollment bound to the supplied installation proof
+      description: Thirty polls per installation per minute. No business access or provisioning occurs here.
+      security: [{deviceToken: []}]
+      responses:
+        '200': {$ref: '#/components/responses/EnrollmentStatus'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '429': {$ref: '#/components/responses/AccessLimited'}
+  /v1/access/enrollment/complete:
+    post:
+      operationId: completeDeviceEnrollment
+      summary: Activate approved proof, confirming local credential persistence
+      description: >-
+        The installation already possesses its secret. Approval alone grants no financial access.
+        Completion atomically creates one standard device using its verifier. Identical proof retries
+        return the same identity, including after request expiry if already active. Revoked proof stays denied.
+      security: [{deviceToken: []}]
+      responses:
+        '200': {description: 'Active standard identity; id, role=standard, state=active.'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/AccessForbidden'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '429': {$ref: '#/components/responses/AccessLimited'}
+  /v1/access/me:
+    get:
+      operationId: verifyDeviceAccess
+      summary: Verify current installation identity and recover interrupted provisioning
+      security: [{deviceToken: []}]
+      responses:
+        '200':
+          description: Active installation identity
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, name, role]
+                properties:
+                  id: {type: string, format: uuid}
+                  name: {type: string}
+                  role: {type: string, enum: [admin, standard]}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/AccessForbidden'}
+        '429': {$ref: '#/components/responses/AccessLimited'}
+  /v1/access/devices:
+    get:
+      operationId: listDeviceAccess
+      summary: Administrator-only trusted devices and unexpired pending requests
+      description: >-
+        devices contains id, name, role, createdAt, revokedAt (nullable).
+        pending contains id, name, purpose, createdAt, expiresAt, state, attempts.
+        No credential verifiers, secrets or pairing codes are disclosed.
+        All access routes share a 120-request/IP/minute limit; credential verification also has a 600/IP/minute limit.
+      security: [{deviceToken: []}]
+      responses:
+        '200': {description: 'Object containing devices and pending arrays.'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/AccessForbidden'}
+        '429': {$ref: '#/components/responses/AccessLimited'}
+  /v1/access/enrollments/{id}/decision:
+    post:
+      operationId: decideDeviceEnrollment
+      summary: Administrator approves a verified installation or rejects it
+      description: >-
+        Verify name, full installation ID and code directly with the owner. Code comparison is constant-time.
+        Five incorrect codes permanently reject this request. Approval/rejection is atomic and single use.
+        Standard/pending devices cannot approve; self-approval is rejected. Code required only for approval.
+      security: [{deviceToken: []}]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [approve]
+              properties:
+                approve: {type: boolean}
+                code: {type: string, pattern: '^[0-9]{6}$'}
+      responses:
+        '200': {description: 'Decision committed; ok=true.'}
+        '400': {$ref: '#/components/responses/Invalid'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/AccessForbidden'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '429': {$ref: '#/components/responses/AccessLimited'}
+  /v1/access/devices/{id}/revoke:
+    post:
+      operationId: revokeDeviceAccess
+      summary: Administrator revokes device authorization
+      description: >-
+        Serialized with enrollment/administrator changes. Last active administrator cannot be revoked.
+        Cancels outstanding approvals issued by the revoked administrator. Every subsequent authentication
+        check rejects revoked proof; requests authorized before revocation may finish. Financial rows and
+        local outboxes are preserved. Offline devices cannot discover revocation until communicating.
+      security: [{deviceToken: []}]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200': {description: 'Revocation committed, including identical retries; ok=true.'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/AccessForbidden'}
+        '404': {$ref: '#/components/responses/Invalid'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '429': {$ref: '#/components/responses/AccessLimited'}
 components:
   securitySchemes:
-    developmentToken: {type: http, scheme: bearer, description: Private local-development token. Release synchronization is disabled until production authentication exists.}
+    deviceToken:
+      type: http
+      scheme: bearer
+      description: >-
+        Installation UUID, a dot, and a 256-bit base64url secret. Only active trusted devices may
+        access financial routes; administrators manage devices. Server stores SHA-256 verifiers.
+        No shared development-token fallback. Enrollment endpoints accept provisional proof only.
   responses:
+    AccessForbidden:
+      description: 'access_revoked or administrator_required. Stop financial sync on access_revoked; preserve local money, drafts and pending operations.'
+      content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}
+    AccessLimited:
+      description: Too many attempts. Retry after sixty seconds without changing operation IDs.
+      headers:
+        Retry-After: {schema: {type: string}, description: '60'}
+      content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}
+    EnrollmentStatus:
+      description: Enrollment identity, human pairing reference and server-controlled state
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [id, code, state]
+            properties:
+              id: {type: string, format: uuid}
+              code: {type: string, pattern: '^[0-9]{6}$'}
+              state: {type: string, enum: [pending, approved, rejected, active, expired]}
     Invalid:
       description: Invalid input, missing record, or financial constraint. Do not retry unchanged; preserve the local operation for review.
       content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}
     Unauthorized:
-      description: Missing/invalid development token. Preserve pending operations and correct configuration.
+      description: Missing/invalid installation credential. Stop synchronization and preserve pending operations. Reenrollment requires administrator approval.
       content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}
     Conflict:
       description: Stale version, aggregate already exists, reused operation ID or duplicate identifier. current is supplied for version/aggregate conflicts when available. Review before replacing a local draft.

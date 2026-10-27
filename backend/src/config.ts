@@ -19,9 +19,9 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env) {
   return { databaseUrl, host, port: Number(port) };
 }
 
-export function readBookkeepingConfig(env: NodeJS.ProcessEnv = process.env) {
+export function readTestControlConfig(env: NodeJS.ProcessEnv = process.env) {
   if (env.ENABLE_DEV_BOOKKEEPING!=='true') return null;
-  if (env.NODE_ENV==='production') throw new Error('Development bookkeeping is prohibited in production');
+  if (env.NODE_ENV==='production') throw new Error('Test-helper control access is prohibited in production');
   const token=env.BOOKKEEPING_DEV_TOKEN??'';
   if (!/^[a-zA-Z0-9_-]{32,128}$/.test(token)) throw new Error('BOOKKEEPING_DEV_TOKEN must be a private random development token');
   return {token};

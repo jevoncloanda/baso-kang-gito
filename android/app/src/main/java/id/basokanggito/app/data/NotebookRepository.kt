@@ -11,6 +11,8 @@ import org.json.JSONArray
 import java.io.IOException
 import kotlinx.coroutines.CancellationException
 
+private class NotebookAccessDenied(code: String) : IOException(code)
+
 data class NotebookState(val records: List<BookRecord> = emptyList(), val pending: List<PendingOperation> = emptyList(), val meta: Map<String, String> = emptyMap(), val loaded: Boolean = false, val unreadable: Boolean = false, val serverRecords: Map<String, BookRecord> = emptyMap(), val customers: List<Customer> = emptyList(), val serverCustomers: Map<String, Customer> = emptyMap())
 
 data class RecoveredEdit(val local: BookRecord, val server: BookRecord?, val reason: String) {
@@ -164,6 +166,7 @@ class NotebookRepository(val database: NotebookDatabase, private val requestSync
                 while (true) {
                     val next = nextUpload() ?: break
                     val response = client.upload(JSONObject(next.payload))
+                    if (response.status == 401 || response.status == 403) throw NotebookAccessDenied(response.body.optString("error", "unauthorized"))
                     if (response.status in 200..299) database.withTransaction {
                         val remote = response.body.getJSONObject("record")
                         require(remote.getString("id") == next.recordId)
@@ -184,6 +187,7 @@ class NotebookRepository(val database: NotebookDatabase, private val requestSync
                 var pullCursor = if (dao.meta("chronologyVersion") == "1") dao.meta("cursor") ?: "0" else "0"
                 do {
                     val response = client.download(pullCursor)
+                    if (response.status == 401 || response.status == 403) throw NotebookAccessDenied(response.body.optString("error", "unauthorized"))
                     if (response.status !in 200..299) throw IOException("download_failed")
                     database.withTransaction {
                         response.body.getJSONArray("changes").objects().forEach { reconcileSnapshot(it.getJSONObject("record")) }
@@ -199,6 +203,9 @@ class NotebookRepository(val database: NotebookDatabase, private val requestSync
                 true
             } catch (cancelled: CancellationException) {
                 throw cancelled
+            } catch (denied: NotebookAccessDenied) {
+                dao.putMeta(NotebookMeta("syncError", denied.message ?: "unauthorized"))
+                false
             } catch (_: Exception) {
                 dao.putMeta(NotebookMeta("syncError", "connection_failed"))
                 false

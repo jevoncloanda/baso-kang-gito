@@ -1,15 +1,15 @@
-import { timingSafeEqual } from 'node:crypto';
 import { sql, type Kysely } from 'kysely';
 import type { FastifyInstance } from 'fastify';
 import type { Database } from './database.js';
 import { applyOperation, businessDate, changes, customerList, customerHistory, FinancialError, record, recap, uuid } from './bookkeeping.js';
+import { authenticateDevice, rateLimit } from './device-access.js';
 
-export function registerBookkeeping(app: FastifyInstance, db: Kysely<Database>, token: string) {
+export function registerBookkeeping(app: FastifyInstance, db: Kysely<Database>) {
   app.register(async routes => {
     routes.addHook('onRequest', async (request,reply) => {
       reply.header('Cache-Control','no-store');
-      const supplied=Buffer.from(request.headers.authorization??''); const expected=Buffer.from(`Bearer ${token}`);
-      if (supplied.length!==expected.length || !timingSafeEqual(supplied,expected)) return reply.code(401).send({error:'unauthorized'});
+      await authenticateDevice(db,request);
+      await rateLimit(db,`financial:${request.ip}`,600);
     });
     routes.post('/operations', async request => applyOperation(db,request.body));
     routes.get<{Querystring:{q?:string;after?:string;limit?:string;archived?:string}}>('/customers', async request => {

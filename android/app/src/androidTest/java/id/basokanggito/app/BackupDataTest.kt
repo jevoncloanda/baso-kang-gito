@@ -267,7 +267,7 @@ class BackupDataTest {
 
     @Test fun backupBeforeUploadsReplaysAcknowledgedIdsThenPreservesLaterVersionConflict() = runBlocking {
         val sourceDb = database(); val targetDb = database(); var file: File? = null
-        val client = NotebookHttpClient("http://127.0.0.1:3001", BuildConfig.SYNC_TOKEN)
+        val client = enrolledTestClient()
         try {
             check(BuildConfig.SYNC_TOKEN.isNotEmpty())
             val source = NotebookRepository(sourceDb); val target = NotebookRepository(targetDb)
@@ -301,7 +301,7 @@ class BackupDataTest {
 
     @Test fun restoredLostAcknowledgmentReplaysTheSamePaymentWithoutAnotherSaleOrReceipt() = runBlocking {
         val sourceDb = database(); val targetDb = database(); var file: File? = null
-        val client = NotebookHttpClient("http://127.0.0.1:3001", BuildConfig.SYNC_TOKEN)
+        val client = enrolledTestClient()
         var blockedId: String? = null
         try {
             check(BuildConfig.SYNC_TOKEN.isNotEmpty())
@@ -311,20 +311,20 @@ class BackupDataTest {
             assertTrue(source.synchronize(client))
             source.submit("add_receipt", record.id, 1, payment("20000").put("date", "2095-05-10"))
             val pending = source.dao.activeFor(record.id).single(); blockedId = record.id
-            client.post("/test/acknowledgments", JSONObject().put("recordId", record.id).put("blocked", true))
+            testControlClient().post("/test/acknowledgments", JSONObject().put("recordId", record.id).put("blocked", true))
             assertFalse(source.synchronize(client))
             file = NotebookBackup(context, source).create(password)
             val restore = NotebookBackup(context, target)
             file!!.inputStream().use { restore.inspect(it, password) }.use { restore.restore(it) }
             assertEquals(pending.payload, target.dao.activeFor(record.id).single().payload)
             assertEquals(pending.operationId, target.dao.activeFor(record.id).single().operationId)
-            client.post("/test/acknowledgments", JSONObject().put("recordId", record.id).put("blocked", false)); blockedId = null
+            testControlClient().post("/test/acknowledgments", JSONObject().put("recordId", record.id).put("blocked", false)); blockedId = null
             assertTrue(target.synchronize(client)); assertTrue(target.dao.activeFor(record.id).isEmpty())
             val remote = BookRecord.parse(client.get("/v1/records/${record.id}").body)
             assertEquals(60000L, remote.received); assertEquals(2, remote.receipts.size)
             assertEquals(1, client.get("/v1/daily?date=2095-05-09").body.getJSONArray("records").length())
         } finally {
-            blockedId?.let { client.post("/test/acknowledgments", JSONObject().put("recordId", it).put("blocked", false)) }
+            blockedId?.let { testControlClient().post("/test/acknowledgments", JSONObject().put("recordId", it).put("blocked", false)) }
             file?.delete(); sourceDb.close(); targetDb.close()
         }
     }

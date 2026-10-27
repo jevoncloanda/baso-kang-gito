@@ -13,13 +13,12 @@ test('health succeeds when the database is reachable', async (t) => {
   assert.equal(response.headers['cache-control'], 'no-store');
 });
 
-test('customer search rejects repeated query parameters before database access', async t => {
-  const token='synthetic-test-token';
-  const app=buildApp(async()=>{},false,{db:{} as Kysely<Database>,token});
+test('financial reads reject missing credentials before database access', async t => {
+  const app=buildApp(async()=>{},false,{db:{} as Kysely<Database>});
   t.after(()=>app.close());
-  const response=await app.inject({url:'/v1/customers?q=a&q=b',headers:{authorization:`Bearer ${token}`}});
-  assert.equal(response.statusCode,400);
-  assert.deepEqual(response.json(),{error:'invalid_operation'});
+  const response=await app.inject({url:'/v1/customers?q=a&q=b'});
+  assert.equal(response.statusCode,401);
+  assert.deepEqual(response.json(),{error:'unauthorized'});
 });
 
 test('health returns a retryable failure without leaking database details', async (t) => {
