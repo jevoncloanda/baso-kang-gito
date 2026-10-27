@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import { sql } from 'kysely';
-import { applyOperation, changes, recap, record } from '../src/bookkeeping.js';
+import { applyOperation, changes, customerHistory, recap, record } from '../src/bookkeeping.js';
 import { readConfig } from '../src/config.js';
 import { createDatabase } from '../src/database.js';
 import { createMigrator } from '../src/migrations.js';
@@ -52,11 +52,21 @@ test('custom PostgreSQL backup restores financial records, audit, migrations and
   const expense = { id: randomUUID(), recordId: randomUUID(), expectedVersion: 0, action: 'save_expense', data: {
     date: '2026-10-31', items: [{ id: randomUUID(), name: 'Synthetic recovery item', amount: '25000' }],
   } };
+  const master = { id: randomUUID(), recordId: randomUUID(), expectedVersion: 0, action: 'save_customer',
+    data: { name: 'Synthetic recovery customer', phone: '0800000000', notes: 'Disposable backup fixture' } };
+  const bon = { id: randomUUID(), recordId: randomUUID(), expectedVersion: 0, action: 'save_sale', data: {
+    date: '2026-10-31', channel: 'langsung', amount: '100000', customerId: master.recordId,
+    paid: true, paymentAmount: '40000', receiptId: randomUUID(), method: 'cash',
+  } };
+  const installment = { id: randomUUID(), recordId: bon.recordId, expectedVersion: 1, action: 'add_receipt', data: {
+    id: randomUUID(), date: '2026-11-01', amount: '60000', method: 'transfer', reason: 'Synthetic debt settlement',
+  } };
   try {
     assert.equal((await createMigrator(sourceDb).migrateToLatest()).error, undefined);
     await applyOperation(sourceDb, sale); await applyOperation(sourceDb, expense);
     await applyOperation(sourceDb, { ...expense, id: randomUUID(), expectedVersion: 1,
       data: { ...expense.data, reason: 'Synthetic correction', items: [{ ...expense.data.items[0]!, amount: '30000' }] } });
+    await applyOperation(sourceDb, master); await applyOperation(sourceDb, bon); await applyOperation(sourceDb, installment);
   } finally { await sourceDb.destroy(); }
 
   await t.test('consistent custom backup stays outside the database volume and never overwrites an archive', async () => {
@@ -77,21 +87,33 @@ test('custom PostgreSQL backup restores financial records, audit, migrations and
     const restored = connect(target);
     try {
       assert.deepEqual(await recap(restored, '2026-10-31', '2026-11-01'), {
-        sales: '100000', received: '100000', expenses: '30000', cashDifference: '70000',
-        byChannel: [{ channel: 'langsung', amount: '100000' }],
+        sales: '200000', received: '140000', expenses: '30000', cashDifference: '110000',
+        byChannel: [{ channel: 'langsung', amount: '200000' }],
       });
       assert.equal((await record(restored, sale.recordId))?.receipts?.length, 1);
       assert.equal((await record(restored, expense.recordId))?.version, 2);
-      assert.equal((await changes(restored, '0', 100)).changes.length, 3);
+      const recoveredBon = await record(restored, bon.recordId);
+      assert.equal(recoveredBon?.customerId, master.recordId); assert.equal(recoveredBon?.customer, master.data.name);
+      assert.deepEqual(recoveredBon?.receipts?.map(r => ({ amount: r.amount, date: r.date, method: r.method })), [
+        { amount: '40000', date: '2026-10-31', method: 'cash' },
+        { amount: '60000', date: '2026-11-01', method: 'transfer' },
+      ]);
+      const recoveredCustomer = await customerHistory(restored, master.recordId, '00000000-0000-0000-0000-000000000000', 100);
+      assert.equal(recoveredCustomer.customer.name, master.data.name); assert.equal(recoveredCustomer.outstanding, '0');
+      assert.equal(recoveredCustomer.records.length, 1);
+      const later = await recap(restored, '2026-11-01', '2026-11-02'); assert.equal(later.sales, '0'); assert.equal(later.received, '60000');
+      assert.equal((await changes(restored, '0', 100)).changes.length, 6);
       const revisions = (await sql<{ count: string }>`SELECT count(*)::text AS count FROM financial_revisions`.execute(restored)).rows[0]!;
-      assert.equal(revisions.count, '3');
+      assert.equal(revisions.count, '6');
       const beforeRetry = await changes(restored, '0', 100);
       assert.deepEqual((await applyOperation(restored, sale)).record, await record(restored, sale.recordId));
+      assert.deepEqual((await applyOperation(restored, installment)).record, recoveredBon);
+      assert.equal((await applyOperation(restored, master)).record.id, master.recordId);
       assert.deepEqual(await changes(restored, '0', 100), beforeRetry);
       assert.deepEqual((await createMigrator(restored).migrateToLatest()).results, []);
       const next = await applyOperation(restored, { ...sale, id: randomUUID(), recordId: randomUUID(),
         data: { ...sale.data, paid: false } });
-      assert.equal(next.cursor, '4');
+      assert.equal(next.cursor, '7');
     } finally { await restored.destroy(); }
     assert.equal(await command('restore', archive, target), 1);
   });

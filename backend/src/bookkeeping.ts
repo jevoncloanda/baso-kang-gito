@@ -6,11 +6,16 @@ type Db = Kysely<Database> | Transaction<Database>;
 export type Receipt = { id: string; date: string; amount: string; method: 'cash'|'transfer'; voided: boolean; createdAt?: string };
 export type RecordData = {
   id: string; kind: 'sale'|'expense'; date: string; version: number; amount: string; note: string; voided: boolean;
-  channel?: string; origin?: string; entryKind?: string; customer?: string; createdAt?: string;
+  channel?: string; origin?: string; entryKind?: string; customer?: string; customerId?: string | null; createdAt?: string;
   receipts?: Receipt[]; items?: { id: string; name: string; amount: string }[];
 };
+export type CustomerData = {
+  id: string; kind: 'customer'; name: string; phone: string; address: string; notes: string;
+  archived: boolean; version: number; createdAt: string;
+};
+export type Snapshot = RecordData | CustomerData;
 export class FinancialError extends Error {
-  constructor(public status: number, public code: string, public current?: RecordData) { super(code); }
+  constructor(public status: number, public code: string, public current?: Snapshot) { super(code); }
 }
 const invalid = () => new FinancialError(400, 'invalid_operation');
 export const channels = ['langsung', 'gofood', 'grabfood', 'shopeefood'];
@@ -47,7 +52,7 @@ function canonical(value: unknown): string {
 
 export async function record(db: Db, id: string): Promise<RecordData | undefined> {
   const sale = await sql<RecordData>`SELECT id, 'sale' AS kind, business_date::text AS date, version, net_amount_rupiah::text AS amount,
-    channel, origin, entry_kind AS "entryKind", customer_name AS customer, note, (voided_at IS NOT NULL) AS voided,
+    channel, origin, entry_kind AS "entryKind", customer_name AS customer, customer_id AS "customerId", note, (voided_at IS NOT NULL) AS voided,
     to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS "createdAt"
     FROM sales WHERE id=${id}::uuid`.execute(db);
   const root = sale.rows[0];
@@ -68,6 +73,38 @@ export async function record(db: Db, id: string): Promise<RecordData | undefined
   return expense;
 }
 
+export async function customer(db: Db, id: string): Promise<CustomerData | undefined> {
+  return (await sql<CustomerData>`SELECT id,'customer' AS kind,name,phone,address,notes,archived,version,
+    to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS "createdAt"
+    FROM customers WHERE id=${id}::uuid`.execute(db)).rows[0];
+}
+
+export async function customerList(db: Db, query: string, after: string, limit: number, archived: boolean) {
+  if (typeof query!=='string' || query.length>200 || !Number.isInteger(limit) || limit<1 || limit>100) throw invalid();
+  if (after!=='00000000-0000-0000-0000-000000000000') uuid(after);
+  const rows=(await sql<{id:string;outstanding:string}>`SELECT c.id,
+    COALESCE((SELECT sum(s.net_amount_rupiah-COALESCE((SELECT sum(a.amount_rupiah) FROM receipt_allocations a
+      JOIN receipts r ON r.id=a.receipt_id WHERE a.sale_id=s.id AND r.voided_at IS NULL),0))
+      FROM sales s WHERE s.customer_id=c.id AND s.channel='langsung' AND s.voided_at IS NULL),0)::text AS outstanding
+    FROM customers c WHERE c.id>${after}::uuid AND (${archived} OR NOT c.archived)
+    AND (strpos(lower(c.name),lower(${query.trim()}))>0 OR strpos(lower(c.phone),lower(${query.trim()}))>0)
+    ORDER BY c.id LIMIT ${limit}`.execute(db)).rows;
+  return {customers:await Promise.all(rows.map(async row=>({...await customer(db,row.id),outstanding:row.outstanding}))),
+    next:rows.length===limit?rows.at(-1)!.id:null};
+}
+
+export async function customerHistory(db: Db, id: string, after: string, limit: number) {
+  const root=await customer(db,id);
+  if (!root) throw new FinancialError(404,'not_found');
+  if (!Number.isInteger(limit) || limit<1 || limit>100) throw invalid();
+  if (after!=='00000000-0000-0000-0000-000000000000') uuid(after);
+  const ids=(await sql<{id:string}>`SELECT id FROM sales WHERE customer_id=${id}::uuid AND id>${after}::uuid ORDER BY id LIMIT ${limit}`.execute(db)).rows;
+  const outstanding=(await sql<{amount:string}>`SELECT COALESCE(sum(s.net_amount_rupiah-COALESCE((SELECT sum(a.amount_rupiah)
+    FROM receipt_allocations a JOIN receipts r ON r.id=a.receipt_id WHERE a.sale_id=s.id AND r.voided_at IS NULL),0)),0)::text AS amount
+    FROM sales s WHERE s.customer_id=${id}::uuid AND s.channel='langsung' AND s.voided_at IS NULL`.execute(db)).rows[0]!.amount;
+  return {customer:root,outstanding,records:await Promise.all(ids.map(row=>record(db,row.id))),next:ids.length===limit?ids.at(-1)!.id:null};
+}
+
 export async function applyOperation(db: Kysely<Database>, input: unknown) {
   const op = object(input); const id=uuid(op.id); const recordId=uuid(op.recordId);
   if (!Number.isSafeInteger(op.expectedVersion) || Number(op.expectedVersion)<0 || Number(op.expectedVersion)>2147483646) throw invalid();
@@ -75,37 +112,62 @@ export async function applyOperation(db: Kysely<Database>, input: unknown) {
   const hash=createHash('sha256').update(canonical(input)).digest('hex');
   return db.transaction().execute(async tx => {
     const state=(await sql<{cursor:string}>`SELECT cursor::text FROM sync_state WHERE id=1 FOR UPDATE`.execute(tx)).rows[0]!;
-    const duplicate=(await sql<{payload_hash:string;result:{record:RecordData;cursor:string}}>`SELECT payload_hash,result FROM financial_operations WHERE id=${id}::uuid`.execute(tx)).rows[0];
+    const duplicate=(await sql<{payload_hash:string;result:{record:Snapshot;cursor:string}}>`SELECT payload_hash,result FROM financial_operations WHERE id=${id}::uuid`.execute(tx)).rows[0];
     if (duplicate) {
       if (duplicate.payload_hash!==hash) throw new FinancialError(409,'operation_reused');
       return duplicate.result;
     }
-    const before=await record(tx,recordId);
+    const before: Snapshot | undefined=await record(tx,recordId) ?? await customer(tx,recordId);
     if ((before?.version ?? 0)!==version) throw new FinancialError(409,'version_conflict',before);
-    if (before?.voided) throw new FinancialError(409,'record_voided',before);
+    if (before && before.kind!=='customer' && before.voided) throw new FinancialError(409,'record_voided',before);
     const reason=version>0 ? text(data.reason,500,true) : 'Created';
-    if (op.action==='save_sale') {
+    if (op.action==='save_customer') {
+      if (before && before.kind!=='customer') throw invalid();
+      const name=text(data.name,200,true); const phone=text(data.phone,50); const address=text(data.address,500); const notes=text(data.notes,1000);
+      if (data.archived!==undefined && typeof data.archived!=='boolean') throw invalid();
+      const archived=data.archived??before?.archived??false;
+      if (before) await sql`UPDATE customers SET name=${name},phone=${phone},address=${address},notes=${notes},archived=${archived},
+        version=version+1,updated_at=now() WHERE id=${recordId}::uuid`.execute(tx);
+      else await sql`INSERT INTO customers(id,name,phone,address,notes,archived) VALUES(${recordId}::uuid,${name},${phone},${address},${notes},${archived})`.execute(tx);
+    } else if (op.action==='save_sale') {
       if (before && before.kind!=='sale') throw invalid();
       const date=businessDate(data.date); const amount=money(data.amount);
       if (!channels.includes(String(data.channel))) throw invalid();
       const channel=String(data.channel); const kind=channel==='langsung'?'individual':'daily_aggregate';
-      const customer=text(data.customer,200); const note=text(data.note,1000);
+      const customerId=data.customerId===undefined ? before?.customerId??null : data.customerId===null ? null : uuid(data.customerId);
+      if (customerId && channel!=='langsung') throw invalid();
+      let customerName=text(data.customer,200); const note=text(data.note,1000);
+      if (customerId) {
+        const linked=await customer(tx,customerId);
+        if (!linked || (linked.archived && before?.customerId!==customerId)) throw new FinancialError(422,'customer_unavailable');
+        customerName=before?.customerId===customerId ? before.customer! : data.customer===undefined ? linked.name : text(data.customer,200,true);
+      }
+      const initial=data.paid===true ? (data.paymentAmount===undefined ? amount : money(data.paymentAmount)) : '0';
+      if (BigInt(initial)>BigInt(amount)) throw new FinancialError(422,'overpayment');
+      if (!before && data.paid!==true && data.paymentAmount!==undefined) throw invalid();
+      // Omitted customerId identifies durable Milestone 1 operations; never rewrite their bodies on retry.
+      const received=before?.receipts!.filter(r=>!r.voided).reduce((sum,r)=>sum+BigInt(r.amount),0n)??0n;
+      if (channel==='langsung' && !customerId && ((!before && 'customerId' in data && BigInt(initial)<BigInt(amount)) ||
+          (before && 'customerId' in data && received===BigInt(before.amount) && BigInt(amount)>received) ||
+          (before?.customerId && BigInt(amount)>before.receipts!.filter(r=>!r.voided).reduce((sum,r)=>sum+BigInt(r.amount),0n)))) {
+        throw new FinancialError(422,'customer_required');
+      }
       // Until POS cutover is explicitly designed, manual platform records are aggregates only.
       const overlap=(await sql<{id:string}>`SELECT id FROM sales WHERE business_date=${date}::date AND channel=${channel}
         AND id<>${recordId}::uuid AND voided_at IS NULL AND (${kind}='daily_aggregate' OR entry_kind='daily_aggregate') LIMIT 1`.execute(tx)).rows[0];
       if (overlap) throw new FinancialError(409,'daily_aggregate_exists',await record(tx,overlap.id));
       if (before) {
-        if (data.paid!==undefined || data.receiptId!==undefined || data.method!==undefined) throw invalid();
+        if (data.paid!==undefined || data.receiptId!==undefined || data.method!==undefined || data.paymentAmount!==undefined) throw invalid();
         const allocated=before.receipts!.filter(r=>!r.voided).reduce((sum,r)=>sum+BigInt(r.amount),0n);
         if (BigInt(amount)<allocated) throw new FinancialError(422,'below_received',before);
         if (channel!==before.channel && allocated>0n) throw new FinancialError(422,'linked_receipts',before);
         await sql`UPDATE sales SET business_date=${date}::date,channel=${channel},entry_kind=${kind},net_amount_rupiah=${amount}::bigint,
-          customer_name=${customer},note=${note},version=version+1,updated_at=now() WHERE id=${recordId}::uuid`.execute(tx);
+          customer_name=${customerName},customer_id=${customerId}::uuid,note=${note},version=version+1,updated_at=now() WHERE id=${recordId}::uuid`.execute(tx);
       } else {
         if (typeof data.paid!=='boolean') throw invalid();
-        await sql`INSERT INTO sales(id,business_date,channel,origin,entry_kind,net_amount_rupiah,customer_name,note,version)
-          VALUES(${recordId}::uuid,${date}::date,${channel},'manual',${kind},${amount}::bigint,${customer},${note},1)`.execute(tx);
-        if (data.paid) await addReceipt(tx,recordId,channel,{id:data.receiptId,date,amount,method:data.method});
+        await sql`INSERT INTO sales(id,business_date,channel,origin,entry_kind,net_amount_rupiah,customer_name,customer_id,note,version)
+          VALUES(${recordId}::uuid,${date}::date,${channel},'manual',${kind},${amount}::bigint,${customerName},${customerId}::uuid,${note},1)`.execute(tx);
+        if (data.paid) await addReceipt(tx,recordId,channel,{id:data.receiptId,date,amount:initial,method:data.method});
       }
     } else if (op.action==='save_expense') {
       if (before && before.kind!=='expense') throw invalid();
@@ -126,7 +188,7 @@ export async function applyOperation(db: Kysely<Database>, input: unknown) {
       await addReceipt(tx,recordId,before.channel!,data);
       await sql`UPDATE sales SET version=version+1,updated_at=now() WHERE id=${recordId}::uuid`.execute(tx);
     } else if (op.action==='void') {
-      if (!before) throw invalid();
+      if (!before || before.kind==='customer') throw invalid();
       if (data.receiptId!==undefined) {
         const receiptId=uuid(data.receiptId);
         if (before.kind!=='sale' || !before.receipts!.some(r=>r.id===receiptId&&!r.voided)) throw invalid();
@@ -139,7 +201,7 @@ export async function applyOperation(db: Kysely<Database>, input: unknown) {
         await sql`UPDATE sales SET voided_at=now(),void_reason=${reason},version=version+1,updated_at=now() WHERE id=${recordId}::uuid`.execute(tx);
       } else await sql`UPDATE expense_entries SET voided_at=now(),void_reason=${reason},version=version+1,updated_at=now() WHERE id=${recordId}::uuid`.execute(tx);
     } else throw invalid();
-    const after=(await record(tx,recordId))!; const cursor=(BigInt(state.cursor)+1n).toString(); const result={record:after,cursor};
+    const after=(await record(tx,recordId) ?? await customer(tx,recordId))!; const cursor=(BigInt(state.cursor)+1n).toString(); const result={record:after,cursor};
     await sql`INSERT INTO financial_operations(id,payload_hash,result) VALUES(${id}::uuid,${hash},${JSON.stringify(result)}::jsonb)`.execute(tx);
     await sql`INSERT INTO financial_revisions(operation_id,record_id,reason,before_record,after_record)
       VALUES(${id}::uuid,${recordId}::uuid,${reason},${before?JSON.stringify(before):null}::jsonb,${JSON.stringify(after)}::jsonb)`.execute(tx);
@@ -160,9 +222,9 @@ async function addReceipt(db: Db,saleId:string,channel:string,data:{[key:string]
 
 export async function changes(db:Db, after:string,limit:number) {
   if (!/^(0|[1-9][0-9]{0,17})$/.test(after) || !Number.isInteger(limit) || limit<1 || limit>100) throw invalid();
-  const rows=(await sql<{cursor:string;record:RecordData}>`SELECT cursor::text,record FROM sync_changes WHERE cursor>${after}::bigint ORDER BY sync_changes.cursor LIMIT ${limit}`.execute(db)).rows;
+  const rows=(await sql<{cursor:string;record:Snapshot}>`SELECT cursor::text,record FROM sync_changes WHERE cursor>${after}::bigint ORDER BY sync_changes.cursor LIMIT ${limit}`.execute(db)).rows;
   // Enrich legacy snapshots for display only. Never rewrite financial snapshots or stored replay results.
-  const missingIds=[...new Set(rows.flatMap(({record})=>[
+  const missingIds=[...new Set(rows.flatMap(({record})=>record.kind==='customer'?[]:[
     ...(record.createdAt?[]:[record.id]), ...(record.receipts??[]).filter(receipt=>!receipt.createdAt).map(receipt=>receipt.id),
   ]))];
   if (missingIds.length) {
@@ -172,6 +234,7 @@ export async function changes(db:Db, after:string,limit:number) {
       UNION ALL SELECT id,'receipt',to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') FROM receipts WHERE id=ANY(${missingIds}::uuid[])`.execute(db)).rows;
     const createdAt=new Map(timestamps.map(row=>[`${row.kind}:${row.id}`,row.createdAt]));
     for (const {record} of rows) {
+      if (record.kind==='customer') continue;
       const rootTime=createdAt.get(`${record.kind}:${record.id}`);
       if (!record.createdAt && rootTime) record.createdAt=rootTime;
       for (const receipt of record.receipts??[]) {

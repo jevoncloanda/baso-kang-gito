@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Baso Kang Gito API
-  version: 0.1.0
+  version: 0.2.0
   description: >-
     Single-shop development notebook. Financial endpoints require an explicitly enabled
     private development token and loopback-only hosting. Not production authentication.
@@ -61,6 +61,17 @@ paths:
         in the client. Editing never changes receipts: omit paid/receiptId/method. Reducing below
         allocations is rejected. Void the mistaken receipt explicitly, then record a correction.
         Voiding a paid sale requires includeReceipts=true and reverses those receipts too.
+        save_customer creates/updates a customer (name required; phone/address/notes optional), with
+        expectedVersion and reason on edits. archived prevents new links; existing debts remain payable.
+        Customer mutations use the same atomic operation/audit/change stream and return a Customer snapshot.
+        New clients always send customerId (UUID or null) for save_sale. Direct unpaid/part-paid creates
+        require an active customer UUID. Omission remains supported solely for unchanged Milestone 1 outboxes.
+        paid=true accepts optional paymentAmount for an initial partial receipt (default full amount).
+        paymentAmount must be omitted on edits or paid=false. Customer links are direct-sale only.
+        Customer UUIDs are checked against authoritative records. A new link captures the supplied customer
+        name at entry (or the current master name if omitted), so offline sales retain their name even if
+        the master is renamed before upload. Unchanged links retain their existing historical names.
+        Archived customers can receive payments. No name-based historical linking or automatic merging occurs.
         Event deposits, refunds, POS writes and multi-sale settlement entry are not supported.
       requestBody:
         required: true
@@ -82,6 +93,20 @@ paths:
                   expectedVersion: 0
                   action: save_sale
                   data: {date: '2026-10-26', channel: gofood, amount: '200000', paid: false}
+              customer:
+                value:
+                  id: 97e357d6-4fa1-4ff8-92e1-275328b94c7a
+                  recordId: 7eb46042-e91e-4abd-bc8d-e19a5336bd1f
+                  expectedVersion: 0
+                  action: save_customer
+                  data: {name: Ibu Sari, phone: '08123456789'}
+              partialBon:
+                value:
+                  id: fcb8736a-7333-4ca4-a729-a2481b61e0e2
+                  recordId: 294f691c-ccbd-4869-a54a-d0b43d9686bc
+                  expectedVersion: 0
+                  action: save_sale
+                  data: {date: '2026-10-26', channel: langsung, amount: '100000', customerId: '7eb46042-e91e-4abd-bc8d-e19a5336bd1f', paid: true, paymentAmount: '40000', receiptId: 'd67244e2-cfb7-424a-b13c-42ab9f80e8aa', method: cash}
       responses:
         '200':
           description: Committed result, or the stored result of the identical operation. An upload cursor is not a download checkpoint.
@@ -91,7 +116,7 @@ paths:
                 type: object
                 required: [record, cursor]
                 properties:
-                  record: {$ref: '#/components/schemas/Record'}
+                  record: {$ref: '#/components/schemas/Snapshot'}
                   cursor: {type: string, pattern: '^[0-9]+$'}
         '400': {$ref: '#/components/responses/Invalid'}
         '401': {$ref: '#/components/responses/Unauthorized'}
@@ -130,9 +155,62 @@ paths:
                       required: [cursor, record]
                       properties:
                         cursor: {type: string}
-                        record: {$ref: '#/components/schemas/Record'}
+                        record: {$ref: '#/components/schemas/Snapshot'}
         '400': {$ref: '#/components/responses/Invalid'}
         '401': {$ref: '#/components/responses/Unauthorized'}
+  /v1/customers:
+    get:
+      operationId: listCustomers
+      summary: Search customers by literal name or phone substring with exact outstanding balances
+      security: [{developmentToken: []}]
+      parameters:
+        - {name: q, in: query, schema: {type: string, maxLength: 200}}
+        - {name: archived, in: query, description: Include archived customers, schema: {type: boolean, default: false}}
+        - {name: after, in: query, schema: {type: string, format: uuid}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 100}}
+      responses:
+        '200':
+          description: UUID-ordered page. Balance excludes voids and platform settlements; next is null at the end.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [customers, next]
+                properties:
+                  next: {type: string, format: uuid, nullable: true}
+                  customers:
+                    type: array
+                    items:
+                      allOf:
+                        - {$ref: '#/components/schemas/Customer'}
+                        - {type: object, required: [outstanding], properties: {outstanding: {type: string, pattern: '^[0-9]+$'}}}
+        '400': {$ref: '#/components/responses/Invalid'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+  /v1/customers/{id}:
+    get:
+      operationId: getCustomerHistory
+      summary: Customer details, whole-customer balance and paged related sale/payment history
+      security: [{developmentToken: []}]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: after, in: query, schema: {type: string, format: uuid}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 100}}
+      responses:
+        '200':
+          description: History includes voided sales and receipts for review. Balance covers all pages and excludes voids.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [customer, outstanding, records, next]
+                properties:
+                  customer: {$ref: '#/components/schemas/Customer'}
+                  outstanding: {type: string, pattern: '^[0-9]+$'}
+                  next: {type: string, format: uuid, nullable: true}
+                  records: {type: array, items: {$ref: '#/components/schemas/Record'}}
+        '400': {$ref: '#/components/responses/Invalid'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/Invalid'}
   /v1/records/{id}:
     get:
       operationId: getFinancialRecord
@@ -217,7 +295,30 @@ components:
       required: [error]
       properties:
         error: {type: string}
-        current: {$ref: '#/components/schemas/Record'}
+        current: {$ref: '#/components/schemas/Snapshot'}
+    Snapshot:
+      oneOf:
+        - {$ref: '#/components/schemas/Record'}
+        - {$ref: '#/components/schemas/Customer'}
+      discriminator:
+        propertyName: kind
+        mapping:
+          sale: '#/components/schemas/Record'
+          expense: '#/components/schemas/Record'
+          customer: '#/components/schemas/Customer'
+    Customer:
+      type: object
+      required: [id, kind, name, phone, address, notes, archived, version, createdAt]
+      properties:
+        id: {type: string, format: uuid}
+        kind: {type: string, enum: [customer]}
+        name: {type: string, minLength: 1, maxLength: 200}
+        phone: {type: string, maxLength: 50}
+        address: {type: string, maxLength: 500}
+        notes: {type: string, maxLength: 1000}
+        archived: {type: boolean}
+        version: {type: integer, minimum: 1}
+        createdAt: {type: string, format: date-time}
     Operation:
       type: object
       required: [id, recordId, expectedVersion, action, data]
@@ -225,15 +326,22 @@ components:
         id: {type: string, format: uuid}
         recordId: {type: string, format: uuid}
         expectedVersion: {type: integer, minimum: 0, maximum: 2147483646}
-        action: {type: string, enum: [save_sale, save_expense, add_receipt, void]}
+        action: {type: string, enum: [save_sale, save_expense, add_receipt, void, save_customer]}
         data:
           type: object
-          description: save_sale needs date/channel/amount and paid for creates; paid creates need receiptId/method. save_expense needs date/items (1–100). add_receipt needs id/date/amount/method. Corrections need reason (1–500 chars). void optionally targets receiptId or explicitly includes linked receipts. Items have stable UUIDs.
+          description: save_sale needs date/channel/amount and paid for creates; paid creates need receiptId/method and may supply paymentAmount. Current clients always send customerId (nullable); new direct Bon requires an active UUID. save_customer needs name with optional phone/address/notes/archived. save_expense needs date/items (1–100). add_receipt needs id/date/amount/method. Corrections need reason (1–500 chars). void optionally targets receiptId or explicitly includes linked receipts. Items have stable UUIDs.
           properties:
             date: {type: string, format: date}
             channel: {type: string, enum: [langsung, gofood, grabfood, shopeefood]}
             amount: {$ref: '#/components/schemas/Amount'}
             customer: {type: string, maxLength: 200}
+            customerId: {type: string, format: uuid, nullable: true}
+            paymentAmount: {$ref: '#/components/schemas/Amount'}
+            name: {type: string, minLength: 1, maxLength: 200}
+            phone: {type: string, maxLength: 50}
+            address: {type: string, maxLength: 500}
+            notes: {type: string, maxLength: 1000}
+            archived: {type: boolean}
             note: {type: string, maxLength: 1000}
             paid: {type: boolean}
             id: {type: string, format: uuid}
@@ -268,6 +376,7 @@ components:
         origin: {type: string, enum: [manual, pos]}
         entryKind: {type: string, enum: [individual, daily_aggregate]}
         customer: {type: string}
+        customerId: {type: string, format: uuid, nullable: true, description: Stable explicit Master Customer link. Missing on legacy snapshots; customer remains the historical name snapshot.}
         items:
           type: array
           items: {type: object, required: [id, name, amount], properties: {id: {type: string, format: uuid}, name: {type: string}, amount: {type: string}}}

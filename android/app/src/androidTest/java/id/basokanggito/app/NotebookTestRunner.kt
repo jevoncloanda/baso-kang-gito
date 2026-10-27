@@ -2,6 +2,8 @@ package id.basokanggito.app
 
 import android.app.Application
 import android.content.Context
+import android.content.Intent
+import androidx.activity.ComponentActivity
 import androidx.room.Room
 import androidx.test.runner.AndroidJUnitRunner
 import id.basokanggito.app.data.*
@@ -15,7 +17,10 @@ class NotebookTestRunner : AndroidJUnitRunner() {
         ActivityLifecycleMonitorRegistry.getInstance().addLifecycleCallback { activity, stage ->
             if (stage == Stage.RESUMED) activity.window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         }
-        super.onStart()
+        // Data-only tests also need an owned window while the physical device is unlocked.
+        val keeper = startActivitySync(Intent(targetContext, ComponentActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        try { super.onStart() }
+        finally { runOnMainSync { keeper.finish() } }
     }
     override fun newApplication(loader: ClassLoader, className: String, context: Context): Application =
         super.newApplication(loader, IsolatedNotebookApplication::class.java.name, context)

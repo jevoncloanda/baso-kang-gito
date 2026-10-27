@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { buildApp } from '../src/app.js';
+import type { Kysely } from 'kysely';
+import type { Database } from '../src/database.js';
 
 test('health succeeds when the database is reachable', async (t) => {
   const app = buildApp(async () => {});
@@ -9,6 +11,15 @@ test('health succeeds when the database is reachable', async (t) => {
   assert.equal(response.statusCode, 200);
   assert.deepEqual(response.json(), { status: 'ok' });
   assert.equal(response.headers['cache-control'], 'no-store');
+});
+
+test('customer search rejects repeated query parameters before database access', async t => {
+  const token='synthetic-test-token';
+  const app=buildApp(async()=>{},false,{db:{} as Kysely<Database>,token});
+  t.after(()=>app.close());
+  const response=await app.inject({url:'/v1/customers?q=a&q=b',headers:{authorization:`Bearer ${token}`}});
+  assert.equal(response.statusCode,400);
+  assert.deepEqual(response.json(),{error:'invalid_operation'});
 });
 
 test('health returns a retryable failure without leaking database details', async (t) => {

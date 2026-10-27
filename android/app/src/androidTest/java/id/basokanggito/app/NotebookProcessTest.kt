@@ -36,6 +36,14 @@ class NotebookProcessTest {
                 repository.dao.putRecord(StoredRecord(correctionId, corrected.date, corrected.json().toString(), original.copy(version = 2, amount = 110000).json().toString()))
                 repository.dao.activeFor(correctionId).forEach { repository.dao.updateOperation(it.copy(state = "failed", error = "version_conflict")) }
                 repository.submit("save_sale", newId(), 0, sale("25000"))
+                val customerId = newId(); val bonId = newId()
+                repository.submitCustomer(customerId, 0, JSONObject().put("name", "Process durable customer"))
+                repository.submit("save_sale", bonId, 0, sale("100000").put("date", "2093-01-02").put("customerId", customerId)
+                    .put("paid", true).put("receiptId", newId()).put("method", "cash").put("paymentAmount", "40000"))
+                repository.submit("add_receipt", bonId, 1, JSONObject().put("id", newId()).put("date", "2093-01-03").put("amount", "20000").put("method", "transfer").put("reason", "Installment"))
+                repository.saveCustomerDraft("unfinished customer draft")
+                repository.dao.putMeta(NotebookMeta("proofCustomer", customerId))
+                repository.dao.putMeta(NotebookMeta("proofBon", bonId))
                 repository.reopenFailed(correctionId)
                 val pending = repository.dao.nextOperation()!!
                 repository.dao.putMeta(NotebookMeta("proofOperation", pending.payload))
@@ -54,6 +62,11 @@ class NotebookProcessTest {
                 assertEquals(120000L, recovery.local.amount)
                 assertEquals("Keep after process death", recovery.reason)
                 assertEquals(110000L, BookRecord.parse(JSONObject(repository.dao.record(recovery.local.id)!!.payload)).amount)
+                val customerId = repository.dao.meta("proofCustomer")!!
+                assertEquals("Process durable customer", Customer.parse(JSONObject(repository.dao.customer(customerId)!!.payload)).name)
+                val bon = BookRecord.parse(JSONObject(repository.dao.record(repository.dao.meta("proofBon")!!)!!.payload))
+                assertEquals(customerId, bon.customerId); assertEquals(60000L, bon.received)
+                assertEquals("unfinished customer draft", repository.dao.meta("customerDraft"))
                 val workId = UUID.fromString(repository.dao.meta("proofWork"))
                 assertEquals(WorkInfo.State.ENQUEUED, WorkManager.getInstance(context).getWorkInfoById(workId).get()!!.state)
                 assertFalse(repository.synchronize(NotebookHttpClient("http://127.0.0.1:1", BuildConfig.SYNC_TOKEN)))

@@ -43,11 +43,16 @@ fun FunctionalNotebook() {
     val state by model.state.collectAsState()
     val saving by model.saving.collectAsState()
     val saved by model.saved.collectAsState()
+    val savedCustomer by model.savedCustomer.collectAsState()
     val error by model.error.collectAsState()
     var route by rememberSaveable { mutableStateOf("journal") }
+    var showBackup by rememberSaveable { mutableStateOf(false) }
     var dateText by rememberSaveable { mutableStateOf(businessToday().toString()) }
     var monthText by rememberSaveable { mutableStateOf(YearMonth.from(businessToday()).toString()) }
     var selectedId by rememberSaveable { mutableStateOf("") }
+    var selectedCustomerId by rememberSaveable { mutableStateOf("") }
+    var customerDraft by rememberSaveable { mutableStateOf("") }
+    var detailReturn by rememberSaveable { mutableStateOf("journal") }
     var draftKind by rememberSaveable { mutableStateOf("") }
     var recordId by rememberSaveable { mutableStateOf(newId()) }
     var baseVersion by rememberSaveable { mutableIntStateOf(0) }
@@ -58,28 +63,52 @@ fun FunctionalNotebook() {
     var receiptDate by rememberSaveable { mutableStateOf(businessToday().toString()) }
     var receiptMethod by rememberSaveable { mutableStateOf("cash") }
     var receiptId by rememberSaveable { mutableStateOf(newId()) }
-    var draftLoaded by remember { mutableStateOf(false) }
+    var draftLoaded by remember(state.meta["restoredAt"]) { mutableStateOf(false) }
     var notice by rememberSaveable { mutableStateOf(false) }
     var recoveredEdit by rememberSaveable { mutableStateOf("") }
     val keyboard = LocalSoftwareKeyboardController.current
     fun persist() {
         model.draft(JSONObject().put("route", route).put("date", dateText).put("kind", draftKind).put("id", recordId).put("version", baseVersion).put("reason", reason)
-            .put("sale", JSONObject().put("amount", sale.amount).put("customer", sale.customer).put("channel", sale.channel).put("paid", sale.paid).put("note", sale.note).put("method", sale.method))
+            .put("sale", JSONObject().put("amount", sale.amount).put("customer", sale.customer).put("customerId", sale.customerId ?: JSONObject.NULL).put("paymentAmount", sale.paymentAmount).put("channel", sale.channel).put("paid", sale.paid).put("note", sale.note).put("method", sale.method))
             .put("expense", JSONArray(expense.map { JSONObject().put("id", it.id).put("name", it.name).put("amount", it.amount) }))
             .put("receiptAmount", receiptAmount).put("receiptDate", receiptDate).put("receiptMethod", receiptMethod).put("receiptId", receiptId)
             .apply { if (recoveredEdit.isNotEmpty()) put("recoveredEdit", JSONObject(recoveredEdit)) }.toString())
+    }
+    fun changeCustomerDraft(draft: JSONObject) { customerDraft = draft.toString(); model.customerDraft(customerDraft) }
+    fun beginCustomer(customer: Customer? = null) {
+        val returnTo = if (route in listOf("sale", "customer_picker")) "sale" else "customers"
+        if (customerDraft.isEmpty() || customer != null) changeCustomerDraft((customer?.json() ?: JSONObject().put("id", newId()).put("version", 0)).put("returnTo", returnTo))
+        else changeCustomerDraft(JSONObject(customerDraft).put("returnTo", returnTo))
+        model.error.value = ""; route = "customer_form"
+    }
+    fun receive(record: BookRecord) {
+        selectedId = record.id; recordId = record.id; baseVersion = record.version; receiptId = newId(); receiptAmount = (record.amount - record.received).toString()
+        receiptDate = businessToday().toString(); receiptMethod = if (record.channel == "langsung") "cash" else "transfer"; route = "receipt"; draftKind = "receipt"; persist()
+    }
+    fun restorePayment(op: JSONObject) {
+        val data = op.getJSONObject("data")
+        recordId = op.getString("recordId"); selectedId = recordId; baseVersion = op.getInt("expectedVersion")
+        receiptId = data.getString("id"); receiptAmount = data.getString("amount"); receiptDate = data.getString("date"); receiptMethod = data.getString("method")
+        route = "receipt"; draftKind = "receipt"; persist()
     }
     fun restoreEdit(edit: RecoveredEdit) {
         val local = edit.local
         recoveredEdit = edit.json().toString()
         recordId = local.id; baseVersion = edit.server?.version ?: 0; dateText = local.date
         reason = edit.reason; draftKind = local.kind; route = local.kind
-        if (local.kind == "sale") sale = SaleDraft(local.amount.toString(), local.customer, displayChannel(local.channel), local.received > 0, local.note, local.receipts.firstOrNull { !it.voided }?.method ?: "cash")
+        if (local.kind == "sale") sale = SaleDraft(local.amount.toString(), local.customer, displayChannel(local.channel), local.received > 0, local.note, local.receipts.firstOrNull { !it.voided }?.method ?: "cash", local.customerId,
+            if (local.received in 1 until local.amount) local.received.toString() else "")
         else expense = ArrayList(local.items.map { ExpenseDraftLine(it.id, it.name, it.amount.toString()) })
         persist()
     }
-    LaunchedEffect(state.loaded) {
+    LaunchedEffect(state.loaded, state.meta["restoredAt"]) {
         if (state.loaded && !draftLoaded) {
+            if (state.meta["restoredAt"] != null) {
+                route = "journal"; selectedId = ""; selectedCustomerId = ""; customerDraft = ""
+                sale = SaleDraft(); expense = arrayListOf(ExpenseDraftLine(newId()))
+                draftKind = ""; recoveredEdit = ""; reason = ""; baseVersion = 0; recordId = newId()
+                receiptAmount = ""; receiptId = newId()
+            }
             val recovered = state.meta["recoveredEdit"]?.takeIf { it.isNotEmpty() }
             if (recovered != null) {
                 runCatching { restoreEdit(RecoveredEdit.parse(recovered)) }.onFailure { model.error.value = "draft_unreadable" }
@@ -89,14 +118,29 @@ fun FunctionalNotebook() {
                     recoveredEdit = draft.optJSONObject("recoveredEdit")?.toString().orEmpty()
                     dateText = validDate(draft.getString("date")); recordId = validId(draft.getString("id")); baseVersion = draft.getInt("version")
                     draftKind = draft.getString("kind"); reason = draft.getString("reason")
-                    sale = SaleDraft(s.getString("amount"), s.getString("customer"), s.getString("channel"), s.getBoolean("paid"), s.getString("note"), s.getString("method"))
+                    sale = SaleDraft(s.getString("amount"), s.getString("customer"), s.getString("channel"), s.getBoolean("paid"), s.getString("note"), s.getString("method"),
+                        s.optString("customerId").takeUnless { it.isEmpty() || it == "null" }, s.optString("paymentAmount"))
                     expense = ArrayList(draft.getJSONArray("expense").objects().map { ExpenseDraftLine(it.getString("id"), it.getString("name"), it.getString("amount")) })
                     receiptAmount = draft.getString("receiptAmount"); receiptDate = draft.getString("receiptDate"); receiptMethod = draft.getString("receiptMethod"); receiptId = draft.getString("receiptId")
                     route = draft.getString("route").takeIf { it in listOf("sale", "expense", "receipt") } ?: "journal"
                     if (baseVersion == 0 && state.records.any { it.id == recordId }) { selectedId = recordId; route = "detail" }
                 }.onFailure { model.error.value = "draft_unreadable" }
             }
+            state.meta["paymentRecovery"]?.takeIf { it.isNotEmpty() }?.let { raw ->
+                runCatching { restorePayment(JSONObject(raw)) }.onFailure { model.error.value = "draft_unreadable" }
+            }
+            state.meta["customerDraft"]?.takeIf { it.isNotEmpty() }?.let { raw ->
+                runCatching { JSONObject(raw).getString("id"); customerDraft = raw; route = "customer_form" }.onFailure { model.error.value = "draft_unreadable" }
+            }
             draftLoaded = true
+        }
+    }
+    LaunchedEffect(savedCustomer) {
+        savedCustomer?.let { customer ->
+            val returnTo = customerDraft.takeIf { it.isNotEmpty() }?.let { JSONObject(it).optString("returnTo", "customers") } ?: "customers"
+            if (returnTo == "sale") { sale = sale.copy(customerId = customer.id, customer = customer.name); route = "sale"; persist() }
+            else { selectedCustomerId = customer.id; route = "customers" }
+            customerDraft = ""; keyboard?.hide(); model.savedCustomer.value = null
         }
     }
     LaunchedEffect(saved) {
@@ -104,36 +148,52 @@ fun FunctionalNotebook() {
             selectedId = it.id; dateText = it.date; route = "detail"; notice = true
             sale = SaleDraft(); expense = arrayListOf(ExpenseDraftLine(newId())); draftKind = ""; reason = ""; baseVersion = 0; recordId = newId()
             recoveredEdit = ""
-            model.draft(""); keyboard?.hide(); model.saved.value = null
+            val recovery = repository.dao.meta("paymentRecovery")?.takeIf { it.isNotEmpty() }?.let(::JSONObject)
+            if (recovery != null && recovery.getString("recordId") == it.id) restorePayment(recovery) else model.draft("")
+            keyboard?.hide(); model.saved.value = null
         }
     }
-    fun back() { keyboard?.hide(); route = "journal"; model.error.value = ""; persist() }
+    fun back() {
+        keyboard?.hide()
+        route = when (route) {
+            "customer_form" -> JSONObject(customerDraft).optString("returnTo", "customers")
+            "customer_picker" -> "sale"
+            "customers" -> { selectedCustomerId = ""; "customers" }
+            "receipt" -> "detail"
+            "detail" -> detailReturn
+            else -> "journal"
+        }
+        model.error.value = ""; persist()
+    }
     fun begin(kind: String, record: BookRecord? = null) {
         model.error.value = ""; notice = false
         if (record != null) {
             recoveredEdit = ""
             recordId = record.id; baseVersion = record.version; dateText = record.date; reason = ""
-            if (kind == "sale") sale = SaleDraft(record.amount.toString(), record.customer, displayChannel(record.channel), false, record.note)
+            if (kind == "sale") sale = SaleDraft(record.amount.toString(), record.customer, displayChannel(record.channel), false, record.note, customerId = record.customerId)
             if (kind == "expense") expense = ArrayList(record.items.map { ExpenseDraftLine(it.id, it.name, it.amount.toString()) })
         } else if (draftKind != kind) { recordId = newId(); baseVersion = 0; reason = ""; recoveredEdit = "" }
         draftKind = kind; route = kind; persist()
     }
-    BackHandler(route != "journal" && !saving, ::back)
+    BackHandler(!showBackup && (route !in listOf("journal", "recap", "customers") || (route == "customers" && selectedCustomerId.isNotEmpty())) && !saving, ::back)
+    if (showBackup) { BackupScreen(model) { showBackup = false }; return }
     if (!state.loaded || !draftLoaded) { Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }; return }
     if (state.unreadable || error == "draft_unreadable") { Text(stringResource(if (state.unreadable) R.string.storage_unreadable else R.string.draft_unreadable), Modifier.padding(24.dp)); return }
     val entries = presentation(state)
     val selected = state.records.find { it.id == selectedId }
     val date = LocalDate.parse(dateText)
-    val nested = route in listOf("sale", "expense", "receipt", "detail")
+    val nested = route in listOf("sale", "expense", "receipt", "detail", "customer_form", "customer_picker") || (route == "customers" && selectedCustomerId.isNotEmpty())
+    val customerNavigation = route in listOf("customers", "customer_form", "customer_picker") || (route in listOf("detail", "receipt") && detailReturn == "customers")
+    fun navigationIcon(destination: String) = when (destination) { "journal" -> R.drawable.ic_book; "customers" -> R.drawable.ic_customers; else -> R.drawable.ic_chart }
     val formError = financialError(error)
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val rail = maxWidth >= 600.dp
         Row(Modifier.fillMaxSize()) {
             if (rail) NavigationRail(Modifier.fillMaxHeight().testTag("navigation-rail"), containerColor = MaterialTheme.colorScheme.surface) {
                 Spacer(Modifier.height(64.dp))
-                listOf("journal" to R.string.daily_book, "recap" to R.string.recap).forEach { (destination, label) ->
-                    NavigationRailItem(selected = route == destination || (nested && destination == "journal"), onClick = { route = destination; persist() },
-                        icon = { AppIcon(if (destination == "journal") R.drawable.ic_book else R.drawable.ic_chart) }, label = { Text(stringResource(label)) },
+                listOf("journal" to R.string.daily_book, "customers" to R.string.customers_bon, "recap" to R.string.recap).forEach { (destination, label) ->
+                    NavigationRailItem(selected = route == destination || (nested && destination == if (customerNavigation) "customers" else "journal"), onClick = { route = destination; selectedCustomerId = ""; persist() },
+                        icon = { AppIcon(navigationIcon(destination)) }, label = { Text(stringResource(label)) },
                         colors = NavigationRailItemDefaults.colors(indicatorColor = MaterialTheme.colorScheme.primaryContainer, selectedIconColor = MaterialTheme.colorScheme.primary, selectedTextColor = MaterialTheme.colorScheme.primary))
                 }
             }
@@ -141,8 +201,15 @@ fun FunctionalNotebook() {
                 Column(Modifier.statusBarsPadding()) {
                     Row(Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(horizontal = Space.medium, vertical = Space.small), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Space.small)) {
                         if (nested) IconButton(onClick = ::back, enabled = !saving, modifier = Modifier.size(48.dp)) { AppIcon(R.drawable.ic_back, description = stringResource(R.string.back)) }
-                        Text(stringResource(when (route) { "sale" -> R.string.add_sale; "expense" -> R.string.add_shopping; "receipt" -> R.string.add_receipt; "detail" -> R.string.details; "recap" -> R.string.monthly_recap; else -> R.string.daily_book }), style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+                        Text(stringResource(when (route) { "sale" -> R.string.add_sale; "expense" -> R.string.add_shopping; "receipt" -> R.string.add_receipt; "detail" -> R.string.details; "recap" -> R.string.monthly_recap; "customers" -> R.string.customers_bon; "customer_picker" -> R.string.select_customer; "customer_form" -> R.string.customer_details; else -> R.string.daily_book }), style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
                         LanguageMenu()
+                        var utilities by remember { mutableStateOf(false) }
+                        Box {
+                            TextButton(onClick = { utilities = true }) { Text(stringResource(R.string.backup_menu)) }
+                            DropdownMenu(expanded = utilities, onDismissRequest = { utilities = false }) {
+                                DropdownMenuItem(text = { Text(stringResource(R.string.backup_title)) }, onClick = { utilities = false; keyboard?.hide(); showBackup = true })
+                            }
+                        }
                     }
                     Surface(color = MaterialTheme.colorScheme.secondaryContainer) {
                         Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -159,8 +226,8 @@ fun FunctionalNotebook() {
                 }
             }, bottomBar = {
                 if (!rail && !nested) NavigationBar(Modifier.testTag("navigation-bottom"), containerColor = MaterialTheme.colorScheme.surface) {
-                    listOf("journal" to R.string.daily_book, "recap" to R.string.recap).forEach { (destination, label) ->
-                        NavigationBarItem(selected = route == destination, onClick = { route = destination; persist() }, icon = { AppIcon(if (destination == "journal") R.drawable.ic_book else R.drawable.ic_chart) }, label = { Text(stringResource(label)) },
+                    listOf("journal" to R.string.daily_book, "customers" to R.string.customers_bon, "recap" to R.string.recap).forEach { (destination, label) ->
+                        NavigationBarItem(selected = route == destination, onClick = { route = destination; selectedCustomerId = ""; persist() }, icon = { AppIcon(navigationIcon(destination)) }, label = { Text(stringResource(label)) },
                             colors = NavigationBarItemDefaults.colors(indicatorColor = MaterialTheme.colorScheme.primaryContainer, selectedIconColor = MaterialTheme.colorScheme.primary, selectedTextColor = MaterialTheme.colorScheme.primary))
                     }
                 }
@@ -170,12 +237,14 @@ fun FunctionalNotebook() {
                         "sale" -> SaleForm(date, sale, { changed ->
                             val aggregate = if (baseVersion == 0 && changed.channel != "Langsung") state.records.find { !it.voided && it.kind == "sale" && it.date == dateText && it.channel == channelCode(changed.channel) } else null
                             if (aggregate != null) begin("sale", aggregate) else { sale = changed; persist() }
-                        }, formError, real = true, editing = baseVersion > 0, onDate = { dateText = it.toString(); persist() }, extra = {
+                        }, formError, real = true, editing = baseVersion > 0, onDate = { dateText = it.toString(); persist() }, customerControl = {
+                            CustomerSaleControl(sale, { sale = it; persist() }, { route = "customer_picker"; persist() })
+                        }, extra = {
                             if (baseVersion > 0) EntryInput(stringResource(R.string.correction_reason), reason, { reason = it; persist() })
                             TextButton(onClick = { sale = SaleDraft(); draftKind = ""; recoveredEdit = ""; route = "journal"; model.draft("") }) { Text(stringResource(R.string.discard_draft)) }
                         }) {
-                            val data = JSONObject().put("date", dateText).put("amount", sale.amount).put("channel", channelCode(sale.channel)).put("customer", sale.customer).put("note", sale.note)
-                            if (baseVersion == 0) data.put("paid", sale.paid).apply { if (sale.paid) put("receiptId", newId()).put("method", sale.method) }
+                            val data = JSONObject().put("date", dateText).put("amount", sale.amount).put("channel", channelCode(sale.channel)).put("customer", sale.customer).put("customerId", sale.customerId ?: JSONObject.NULL).put("note", sale.note)
+                            if (baseVersion == 0) data.put("paid", sale.paid).apply { if (sale.paid) { put("receiptId", newId()).put("method", sale.method); if (sale.paymentAmount.isNotEmpty()) put("paymentAmount", sale.paymentAmount) } }
                             else data.put("reason", reason)
                             model.submit("save_sale", recordId, baseVersion, data)
                         }
@@ -188,24 +257,38 @@ fun FunctionalNotebook() {
                             }))
                             model.submit("save_expense", recordId, baseVersion, data)
                         }
-                        "receipt" -> ReceiptForm(LocalDate.parse(receiptDate), receiptAmount, receiptMethod, formError,
+                        "receipt" -> ReceiptForm(LocalDate.parse(receiptDate), receiptAmount, receiptMethod, formError, state.records.find { it.id == recordId }?.let { it.amount - it.received },
+                            recoveryCount = state.meta["paymentRecovery"]?.takeIf { it.isNotEmpty() }?.let { JSONObject(it).optJSONArray("remaining").objects().size + 1 } ?: 0,
+                            onDiscard = { model.discardPaymentDraft { route = "detail"; draftKind = ""; model.error.value = "" } },
                             onDate = { receiptDate = it.toString(); persist() }, onAmount = { receiptAmount = it; persist() }, onMethod = { receiptMethod = it; persist() }) {
                             model.submit("add_receipt", recordId, baseVersion, JSONObject().put("id", receiptId).put("date", receiptDate).put("amount", receiptAmount).put("method", receiptMethod).put("reason", "Payment received"))
                         }
                         "detail" -> selected?.let { record ->
-                            RecordDetail(record, state, notice, formError, onEdit = { begin(record.kind, record) }, onReceipt = {
-                                recordId = record.id; baseVersion = record.version; receiptId = newId(); receiptAmount = (record.amount - record.received).toString()
-                                receiptDate = businessToday().toString(); receiptMethod = if (record.channel == "langsung") "cash" else "transfer"; route = "receipt"; draftKind = "receipt"; persist()
-                            }, onVoid = { target, why, expected ->
+                            RecordDetail(record, state, notice, formError, onEdit = { begin(record.kind, record) }, onReceipt = { receive(record) }, onVoid = { target, why, expected ->
                                 val data = JSONObject().put("reason", why).put("includeReceipts", true)
                                 if (target.isNotEmpty()) data.put("receiptId", target)
                                 model.submit("void", record.id, expected, data)
                             }, onUseServer = { model.review(record.id) { success -> if (success) { route = "journal"; notice = false } else model.error.value = "server_version_unavailable" } },
-                                onReopen = { model.reopen(record.id, ::restoreEdit) })
+                                onReopen = { model.reopen(record.id, ::restoreEdit) }, onReopenPayment = { model.reopenPayment(record.id, ::restorePayment) })
                         }
+                        "customers", "customer_picker" -> CustomersScreen(state, if (route == "customer_picker") "" else selectedCustomerId, route == "customer_picker", formError,
+                            onSelect = { customer ->
+                                if (route == "customer_picker") { sale = sale.copy(customerId = customer.id, customer = customer.name); route = "sale"; persist() }
+                                else selectedCustomerId = customer.id
+                            }, onAdd = { beginCustomer() }, onEdit = { beginCustomer(it) }, onRecord = { selectedId = it.id; detailReturn = "customers"; route = "detail"; notice = false },
+                            onPayment = { detailReturn = "customers"; receive(it) }, onReview = { customer -> model.review(customer.id) { success -> if (!success) model.error.value = "server_version_unavailable" } },
+                            onReopen = { customer -> model.reopenCustomer(customer.id) { edit -> changeCustomerDraft(edit.json().put("returnTo", "customers")); route = "customer_form" } })
+                        "customer_form" -> if (customerDraft.isNotEmpty()) CustomerForm(JSONObject(customerDraft), formError, saving, ::changeCustomerDraft,
+                            onDiscard = { val target = JSONObject(customerDraft).optString("returnTo", "customers"); customerDraft = ""; model.customerDraft(""); route = target; model.error.value = "" },
+                            onSave = {
+                                val draft = JSONObject(customerDraft)
+                                val data = JSONObject().put("name", draft.optString("name")).put("phone", draft.optString("phone")).put("address", draft.optString("address"))
+                                    .put("notes", draft.optString("notes")).put("archived", draft.optBoolean("archived")).put("reason", draft.optString("reason"))
+                                model.submitCustomer(draft.getString("id"), draft.getInt("version"), data)
+                            })
                         "recap" -> MonthlyRecap(entries, YearMonth.parse(monthText), { monthText = it.toString() }, realRecords = state.records) { dateText = it; route = "journal" }
                         else -> Journal(entries.filter { it.date == dateText }, date, { dateText = it.toString() }, { begin("sale") }, { begin("expense") },
-                            { selectedId = it.receiptFor.ifEmpty { it.id }; route = "detail"; notice = false }, realTotals = totals(state.records, dateText, date.plusDays(1).toString()))
+                            { selectedId = it.receiptFor.ifEmpty { it.id }; detailReturn = "journal"; route = "detail"; notice = false }, realTotals = totals(state.records, dateText, date.plusDays(1).toString()))
                     }
                     if (saving) LinearProgressIndicator(Modifier.fillMaxWidth().align(Alignment.TopCenter))
                 }
@@ -222,6 +305,8 @@ internal fun financialError(code: String): String = if (code.isEmpty()) "" else 
     "daily_aggregate_exists" -> R.string.aggregate_exists
     "server_version_unavailable" -> R.string.server_unavailable
     "draft_unreadable" -> R.string.draft_unreadable
+    "customer_required" -> R.string.bon_customer_hint
+    "customer_unavailable" -> R.string.customer_unavailable
     else -> R.string.invalid_record
 })
 
@@ -248,16 +333,22 @@ internal fun PaymentMethod(method: String, onMethod: (String) -> Unit) {
 }
 
 @Composable
-private fun ReceiptForm(date: LocalDate, amount: String, method: String, error: String, onDate: (LocalDate) -> Unit, onAmount: (String) -> Unit, onMethod: (String) -> Unit, onSave: () -> Unit) {
+private fun ReceiptForm(date: LocalDate, amount: String, method: String, error: String, remaining: Long?, recoveryCount: Int, onDiscard: () -> Unit, onDate: (LocalDate) -> Unit, onAmount: (String) -> Unit, onMethod: (String) -> Unit, onSave: () -> Unit) {
     FormFrame(total = positiveAmount(amount), error = error, real = true, onSave = onSave) {
         BusinessDateControl(date, onDate)
         EntryInput(stringResource(R.string.receipt_amount), amount, onAmount, money = true, prominent = true)
         PaymentMethod(method, onMethod)
+        if (recoveryCount > 0) Text(stringResource(R.string.payment_drafts_review, recoveryCount))
+        if (remaining != null) {
+            MoneyRow(stringResource(R.string.unpaid), remaining)
+            positiveAmount(amount)?.takeIf { it <= remaining }?.let { MoneyRow(stringResource(R.string.balance_after_payment), remaining - it) }
+        }
+        TextButton(onClick = onDiscard) { Text(stringResource(if (recoveryCount > 1) R.string.discard_payment_drafts else R.string.discard_draft)) }
     }
 }
 
 @Composable
-private fun RecordDetail(record: BookRecord, state: NotebookState, notice: Boolean, error: String, onEdit: () -> Unit, onReceipt: () -> Unit, onVoid: (String, String, Int) -> Unit, onUseServer: () -> Unit, onReopen: () -> Unit) {
+private fun RecordDetail(record: BookRecord, state: NotebookState, notice: Boolean, error: String, onEdit: () -> Unit, onReceipt: () -> Unit, onVoid: (String, String, Int) -> Unit, onUseServer: () -> Unit, onReopen: () -> Unit, onReopenPayment: () -> Unit) {
     var voidTarget by rememberSaveable(record.id) { mutableStateOf<String?>(null) }
     var voidVersion by rememberSaveable(record.id) { mutableIntStateOf(record.version) }
     var reason by rememberSaveable(record.id) { mutableStateOf("") }
@@ -281,6 +372,12 @@ private fun RecordDetail(record: BookRecord, state: NotebookState, notice: Boole
                     TextButton(onClick = onUseServer) { Text(stringResource(R.string.use_server)) }
                 }
                 if (remote == null && JSONObject(failed.payload).getString("action") in listOf("save_sale", "save_expense")) TextButton(onClick = onReopen) { Text(stringResource(R.string.reopen_local)) }
+                val attempted = JSONObject(failed.payload)
+                if (attempted.getString("action") == "add_receipt") {
+                    val input = attempted.getJSONObject("data")
+                    Text(stringResource(R.string.attempted_payment, rupiah(input.getString("amount").toLong()), input.getString("date")))
+                    TextButton(onClick = onReopenPayment) { Text(stringResource(R.string.review_payment)) }
+                }
             }
             if (error.isNotEmpty()) Text(error, color = MaterialTheme.colorScheme.error)
             if (record.customer.isNotBlank()) Text(stringResource(R.string.customer_value, record.customer))

@@ -45,10 +45,14 @@ open class NotebookApplication : Application() {
     open val backgroundSyncEnabled: Boolean get() = syncConfigured()
     // A single explicit construction point; instrumentation overrides it with an isolated database.
     open val repository: NotebookRepository by lazy {
-        NotebookRepository(Room.databaseBuilder(this, NotebookDatabase::class.java, "bookkeeping.db").build()) { scheduleSync(this) }
+        NotebookRepository(Room.databaseBuilder(this, NotebookDatabase::class.java, "bookkeeping.db").addMigrations(CustomerMigration).build()) { scheduleSync(this) }
     }
     override fun onCreate() {
         super.onCreate()
+        // A killed process cannot run ViewModel cleanup; these are owned temporary files only.
+        java.io.File(cacheDir, "notebook-backup").listFiles()?.filter {
+            it.isFile && it.name.startsWith("notebook-") && it.extension in setOf("stage", "bkgbak")
+        }?.forEach { it.delete() }
         if (backgroundSyncEnabled) {
             WorkManager.getInstance(this).enqueueUniquePeriodicWork("notebook-periodic", ExistingPeriodicWorkPolicy.KEEP,
                 PeriodicWorkRequestBuilder<NotebookSyncWorker>(15, TimeUnit.MINUTES)

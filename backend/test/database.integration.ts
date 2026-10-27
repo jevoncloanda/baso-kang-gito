@@ -16,7 +16,7 @@ test('PostgreSQL migrations are repeatable and health checks a real connection',
   assert.equal(second.error, undefined);
   assert.deepEqual(second.results, []);
   const migrations = await migrator.getMigrations();
-  assert.equal(migrations.length, 2);
+  assert.equal(migrations.length, 3);
   assert.equal(migrations[0]?.name, '001_foundation');
   assert.ok(migrations[0]?.executedAt);
   const app = buildApp(() => sql`select 1`.execute(db));

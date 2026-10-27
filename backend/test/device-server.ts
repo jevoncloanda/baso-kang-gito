@@ -51,4 +51,10 @@ app.post('/test/shutdown',async(request,reply)=>{
   return {stopped:true};
 });
 // Container runs must publish this port on host loopback only.
-await app.listen({host:process.argv.includes('--container')?'0.0.0.0':'127.0.0.1',port:3001});console.log('Isolated device integration API listening on port 3001');
+try {
+  await app.listen({host:process.argv.includes('--container')?'0.0.0.0':'127.0.0.1',port:3001});
+  console.log('Isolated device integration API listening on port 3001');
+} catch (error) {
+  await close();
+  throw error;
+}

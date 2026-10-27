@@ -28,6 +28,7 @@ data class JournalEntry(
 data class SaleDraft(
     val amount: String = "", val customer: String = "", val channel: String = "Langsung",
     val paid: Boolean = true, val note: String = "", val method: String = "cash",
+    val customerId: String? = null, val paymentAmount: String = "",
 ) : Serializable
 
 data class ExpenseDraftLine(val id: String, val name: String = "", val amount: String = "") : Serializable

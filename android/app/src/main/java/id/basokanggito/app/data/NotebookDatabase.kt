@@ -1,11 +1,15 @@
 package id.basokanggito.app.data
 
 import androidx.room.*
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import kotlinx.coroutines.flow.Flow
 
 // A versioned root snapshot includes its items/receipts; children reconcile atomically with the root.
 @Entity(tableName = "book_records")
 data class StoredRecord(@PrimaryKey val id: String, val date: String, val payload: String, val serverPayload: String? = null)
+@Entity(tableName = "customers")
+data class StoredCustomer(@PrimaryKey val id: String, val payload: String, val serverPayload: String? = null)
 @Entity(tableName = "pending_operations", indices = [Index("recordId"), Index(value = ["operationId"], unique = true)])
 data class PendingOperation(
     @PrimaryKey(autoGenerate = true) val sequence: Long = 0, val operationId: String, val recordId: String,
@@ -16,6 +20,11 @@ data class NotebookMeta(@PrimaryKey val key: String, val value: String)
 
 @Dao
 interface NotebookDao {
+    @Query("SELECT * FROM customers ORDER BY id") fun observeCustomers(): Flow<List<StoredCustomer>>
+    @Query("SELECT * FROM customers ORDER BY id") suspend fun customers(): List<StoredCustomer>
+    @Query("SELECT * FROM customers WHERE id=:id") suspend fun customer(id: String): StoredCustomer?
+    @Upsert suspend fun putCustomer(customer: StoredCustomer)
+    @Query("DELETE FROM customers WHERE id=:id") suspend fun removeCustomer(id: String)
     @Query("SELECT * FROM book_records ORDER BY date DESC,id") fun observeRecords(): Flow<List<StoredRecord>>
     @Query("SELECT * FROM pending_operations WHERE state IN ('pending','failed') ORDER BY sequence") fun observeQueue(): Flow<List<PendingOperation>>
     @Query("SELECT * FROM notebook_meta") fun observeMeta(): Flow<List<NotebookMeta>>
@@ -34,5 +43,11 @@ interface NotebookDao {
     @Upsert suspend fun putMeta(meta: NotebookMeta)
 }
 
-@Database(entities = [StoredRecord::class, PendingOperation::class, NotebookMeta::class], version = 1, exportSchema = true)
+val CustomerMigration = object : Migration(1, 2) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS `customers` (`id` TEXT NOT NULL, `payload` TEXT NOT NULL, `serverPayload` TEXT, PRIMARY KEY(`id`))")
+    }
+}
+
+@Database(entities = [StoredRecord::class, StoredCustomer::class, PendingOperation::class, NotebookMeta::class], version = 2, exportSchema = true)
 abstract class NotebookDatabase : RoomDatabase() { abstract fun notebook(): NotebookDao }

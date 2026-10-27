@@ -24,7 +24,7 @@ import java.time.format.DateTimeFormatter
 import java.util.UUID
 
 @Composable
-fun SaleForm(date: LocalDate, draft: SaleDraft, onChange: (SaleDraft) -> Unit, saveError: String, real: Boolean = false, editing: Boolean = false, onDate: ((LocalDate) -> Unit)? = null, extra: @Composable ColumnScope.() -> Unit = {}, onSave: () -> Unit) {
+fun SaleForm(date: LocalDate, draft: SaleDraft, onChange: (SaleDraft) -> Unit, saveError: String, real: Boolean = false, editing: Boolean = false, onDate: ((LocalDate) -> Unit)? = null, customerControl: (@Composable () -> Unit)? = null, extra: @Composable ColumnScope.() -> Unit = {}, onSave: () -> Unit) {
     var attempted by rememberSaveable { mutableStateOf(false) }
     var channelsOpen by remember { mutableStateOf(false) }
     val amount = positiveAmount(draft.amount)
@@ -42,19 +42,26 @@ fun SaleForm(date: LocalDate, draft: SaleDraft, onChange: (SaleDraft) -> Unit, s
                 }
                 DropdownMenu(expanded = channelsOpen, onDismissRequest = { channelsOpen = false }) {
                     SalesChannels.forEach { channel ->
-                        DropdownMenuItem(text = { Text(channelLabel(channel)) }, onClick = { onChange(draft.copy(channel = channel, paid = channel == "Langsung")); channelsOpen = false })
+                        DropdownMenuItem(text = { Text(channelLabel(channel)) }, onClick = { onChange(draft.copy(channel = channel, paid = channel == "Langsung", customerId = if (channel == "Langsung") draft.customerId else null, paymentAmount = "")); channelsOpen = false })
                     }
                 }
             }
         }
         if (draft.channel != "Langsung") Text(stringResource(if (real) R.string.platform_real_hint else R.string.platform_hint), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        EntryInput(stringResource(R.string.customer_optional), draft.customer, { onChange(draft.copy(customer = it)) })
+        if (customerControl != null && draft.channel == "Langsung") customerControl()
+        else EntryInput(stringResource(R.string.customer_optional), draft.customer, { onChange(draft.copy(customer = it)) })
         if (!editing) Row(Modifier.fillMaxWidth().toggleable(value = draft.paid, role = Role.Checkbox, onValueChange = { onChange(draft.copy(paid = it)) }).heightIn(min = 56.dp), verticalAlignment = Alignment.CenterVertically) {
             Checkbox(checked = draft.paid, onCheckedChange = null)
             Spacer(Modifier.width(Space.small))
             Text(stringResource(R.string.money_received), modifier = Modifier.weight(1f))
         }
-        if (!editing && !draft.paid) Text(stringResource(R.string.unpaid_hint), style = MaterialTheme.typography.bodyMedium)
+        if (!editing && !draft.paid) Text(stringResource(if (real && draft.channel == "Langsung") R.string.bon_customer_hint else R.string.unpaid_hint), style = MaterialTheme.typography.bodyMedium)
+        if (real && draft.paid && !editing) {
+            EntryInput(stringResource(R.string.initial_payment), draft.paymentAmount, { onChange(draft.copy(paymentAmount = it)) }, money = true)
+            Text(stringResource(R.string.initial_payment_hint), style = MaterialTheme.typography.bodyMedium)
+            val received = if (draft.paymentAmount.isEmpty()) amount else positiveAmount(draft.paymentAmount)
+            if (amount != null && received != null && received <= amount) MoneyRow(stringResource(R.string.unpaid), amount - received)
+        }
         if (real && draft.paid && !editing) PaymentMethod(draft.method) { onChange(draft.copy(method = it)) }
         if (editing) Text(stringResource(R.string.edit_payment_hint), style = MaterialTheme.typography.bodyMedium)
         EntryInput(stringResource(R.string.note_optional), draft.note, { onChange(draft.copy(note = it)) }, imeAction = ImeAction.Done)

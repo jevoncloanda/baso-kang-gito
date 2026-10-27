@@ -2,7 +2,7 @@ import { timingSafeEqual } from 'node:crypto';
 import { sql, type Kysely } from 'kysely';
 import type { FastifyInstance } from 'fastify';
 import type { Database } from './database.js';
-import { applyOperation, businessDate, changes, FinancialError, record, recap, uuid } from './bookkeeping.js';
+import { applyOperation, businessDate, changes, customerList, customerHistory, FinancialError, record, recap, uuid } from './bookkeeping.js';
 
 export function registerBookkeeping(app: FastifyInstance, db: Kysely<Database>, token: string) {
   app.register(async routes => {
@@ -12,6 +12,12 @@ export function registerBookkeeping(app: FastifyInstance, db: Kysely<Database>, 
       if (supplied.length!==expected.length || !timingSafeEqual(supplied,expected)) return reply.code(401).send({error:'unauthorized'});
     });
     routes.post('/operations', async request => applyOperation(db,request.body));
+    routes.get<{Querystring:{q?:string;after?:string;limit?:string;archived?:string}}>('/customers', async request => {
+      if (request.query.archived!==undefined && !['true','false'].includes(request.query.archived)) throw new FinancialError(400,'invalid_query');
+      return customerList(db,request.query.q??'',request.query.after??'00000000-0000-0000-0000-000000000000',Number(request.query.limit??100),request.query.archived==='true');
+    });
+    routes.get<{Params:{id:string};Querystring:{after?:string;limit?:string}}>('/customers/:id', async request =>
+      customerHistory(db,uuid(request.params.id),request.query.after??'00000000-0000-0000-0000-000000000000',Number(request.query.limit??100)));
     routes.get<{Querystring:{after?:string;limit?:string}}>('/changes', async request => changes(db,request.query.after??'0',Number(request.query.limit??100)));
     routes.get<{Params:{id:string}}>('/records/:id', async (request,reply) => {
       const result=await record(db,uuid(request.params.id));
