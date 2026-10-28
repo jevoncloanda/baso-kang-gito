@@ -18,7 +18,10 @@ fun testControlClient() = NotebookHttpClient("http://127.0.0.1:3001", BuildConfi
 
 fun <R : org.junit.rules.TestRule, A : androidx.activity.ComponentActivity> AndroidComposeTestRule<R, A>.unlockNotebookFixture() {
     waitUntil(10_000) { onAllNodesWithTag("pin_unlock").fetchSemanticsNodes().isNotEmpty() }
-    onNodeWithTag("pin_unlock").performTextInput("135790")
-    onNodeWithTag("unlock").performScrollTo().performClick()
+    enterNotebookPin("135790")
     waitUntil(10_000) { onAllNodesWithText("Tools").fetchSemanticsNodes().isNotEmpty() }
+}
+
+fun <R : org.junit.rules.TestRule, A : androidx.activity.ComponentActivity> AndroidComposeTestRule<R, A>.enterNotebookPin(value: String) {
+    value.forEach { digit -> onNodeWithTag("pin-digit-$digit").performScrollTo().performClick() }
 }

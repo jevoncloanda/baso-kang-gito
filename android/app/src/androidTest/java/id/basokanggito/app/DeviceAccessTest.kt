@@ -146,7 +146,7 @@ class DeviceAccessTest {
         compose.waitUntil(10_000) { app.access.state.value.hasPin }
         assertTrue(app.access.store.verify("123456"))
         model.unlocked.value = false
-        compose.onNodeWithTag("pin_unlock").performTextInput("123456"); compose.onNodeWithTag("unlock").performScrollTo().performClick()
+        compose.enterNotebookPin("123456")
         compose.waitUntil(10_000) { model.unlocked.value }
         compose.runOnIdle { changing.value = true }
         compose.onNodeWithTag("pin_current").performTextInput("123456")
@@ -169,7 +169,7 @@ class DeviceAccessTest {
             compose.onNodeWithText("65000").assertExists()
             scenario.moveToState(Lifecycle.State.CREATED); SystemClock.sleep(31_000); scenario.moveToState(Lifecycle.State.RESUMED)
             compose.waitUntil(10_000) { compose.onAllNodesWithTag("pin_unlock").fetchSemanticsNodes().isNotEmpty() }
-            compose.onNodeWithTag("pin_unlock").performTextInput("135790"); compose.onNodeWithTag("unlock").performScrollTo().performClick()
+            compose.enterNotebookPin("135790")
             compose.waitUntil(10_000) { compose.onAllNodesWithText("65000").fetchSemanticsNodes().isNotEmpty() }
         }
     }

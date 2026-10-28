@@ -3,6 +3,8 @@ package id.basokanggito.app.ui
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -16,6 +18,11 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import id.basokanggito.app.R
@@ -24,27 +31,18 @@ import java.time.format.DateTimeFormatter
 import java.util.UUID
 
 @Composable
-fun SaleForm(date: LocalDate, draft: SaleDraft, onChange: (SaleDraft) -> Unit, saveError: String, real: Boolean = false, editing: Boolean = false, onDate: ((LocalDate) -> Unit)? = null, customerControl: (@Composable () -> Unit)? = null, extra: @Composable ColumnScope.() -> Unit = {}, onSave: () -> Unit) {
+fun SaleForm(date: LocalDate, draft: SaleDraft, onChange: (SaleDraft) -> Unit, saveError: String, real: Boolean = false, editing: Boolean = false, saving: Boolean = false, onDate: ((LocalDate) -> Unit)? = null, customerControl: (@Composable () -> Unit)? = null, extra: @Composable ColumnScope.() -> Unit = {}, onSave: () -> Unit) {
     var attempted by rememberSaveable { mutableStateOf(false) }
-    var channelsOpen by remember { mutableStateOf(false) }
     val amount = positiveAmount(draft.amount)
-    FormFrame(total = amount, error = saveError, real = real, onSave = { attempted = true; if (amount != null) onSave() }) {
+    FormFrame(total = amount, error = saveError, real = real, saving = saving, onSave = { attempted = true; if (amount != null) onSave() }) {
         if (onDate == null) Text(dateLabel(date), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         else BusinessDateControl(date, onDate)
         EntryInput(stringResource(R.string.amount_label), draft.amount, { onChange(draft.copy(amount = it)) }, money = true, prominent = true,
             error = if (attempted && amount == null) stringResource(R.string.amount_error) else null)
-        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(stringResource(R.string.channel_label), style = MaterialTheme.typography.labelLarge)
-            Box {
-                OutlinedButton(onClick = { channelsOpen = true }, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp), shape = MaterialTheme.shapes.small) {
-                    Text(channelLabel(draft.channel), modifier = Modifier.weight(1f), textAlign = TextAlign.Start)
-                    AppIcon(R.drawable.ic_next)
-                }
-                DropdownMenu(expanded = channelsOpen, onDismissRequest = { channelsOpen = false }) {
-                    SalesChannels.forEach { channel ->
-                        DropdownMenuItem(text = { Text(channelLabel(channel)) }, onClick = { onChange(draft.copy(channel = channel, paid = channel == "Langsung", customerId = if (channel == "Langsung") draft.customerId else null, paymentAmount = "")); channelsOpen = false })
-                    }
-                }
+        Column(verticalArrangement = Arrangement.spacedBy(Space.small)) {
+            Text(stringResource(R.string.channel_label), style = MaterialTheme.typography.titleMedium)
+            ChannelSelection(draft.channel) { channel ->
+                onChange(draft.copy(channel = channel, paid = channel == "Langsung", customerId = if (channel == "Langsung") draft.customerId else null, paymentAmount = ""))
             }
         }
         if (draft.channel != "Langsung") Text(stringResource(if (real) R.string.platform_real_hint else R.string.platform_hint), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -70,7 +68,7 @@ fun SaleForm(date: LocalDate, draft: SaleDraft, onChange: (SaleDraft) -> Unit, s
 }
 
 @Composable
-fun ExpenseForm(date: LocalDate, lines: List<ExpenseDraftLine>, onChange: (List<ExpenseDraftLine>) -> Unit, saveError: String, real: Boolean = false, onDate: ((LocalDate) -> Unit)? = null, extra: @Composable ColumnScope.() -> Unit = {}, onSave: () -> Unit) {
+fun ExpenseForm(date: LocalDate, lines: List<ExpenseDraftLine>, onChange: (List<ExpenseDraftLine>) -> Unit, saveError: String, real: Boolean = false, saving: Boolean = false, onDate: ((LocalDate) -> Unit)? = null, extra: @Composable ColumnScope.() -> Unit = {}, onSave: () -> Unit) {
     var attempted by rememberSaveable { mutableStateOf(false) }
     var removed by rememberSaveable { mutableStateOf<ExpenseDraftLine?>(null) }
     var removedIndex by rememberSaveable { mutableIntStateOf(0) }
@@ -79,11 +77,20 @@ fun ExpenseForm(date: LocalDate, lines: List<ExpenseDraftLine>, onChange: (List<
     val total = expenseTotal(lines)
     val stacked = LocalDensity.current.fontScale > 1.3f
     FormFrame(total, saveError.ifEmpty { if (attempted && total == null) stringResource(R.string.shopping_error) else "" },
-        real = real,
+        real = real, saving = saving,
         onSave = { attempted = true; if (total != null) onSave() }) {
         if (onDate == null) Text(dateLabel(date), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         else BusinessDateControl(date, onDate)
-        Text(stringResource(R.string.shopping_hint), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Surface(shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.surface) {
+            Column(Modifier.fillMaxWidth().padding(Space.large), verticalArrangement = Arrangement.spacedBy(Space.small)) {
+                Text(stringResource(R.string.shopping_total), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                AmountText(total ?: 0, style = MaterialTheme.typography.headlineLarge)
+            }
+        }
+        Column(verticalArrangement = Arrangement.spacedBy(Space.tiny)) {
+            SectionTitle(stringResource(R.string.shopping_items))
+            Text(stringResource(R.string.shopping_hint), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
         lines.forEachIndexed { index, line ->
             key(line.id) {
                 val nameFocus = remember { FocusRequester() }
@@ -91,6 +98,7 @@ fun ExpenseForm(date: LocalDate, lines: List<ExpenseDraftLine>, onChange: (List<
                 LaunchedEffect(focusId) {
                     if (focusId == line.id) { nameFocus.requestFocus(); keyboard?.show(); focusId = "" }
                 }
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 BoxWithConstraints(Modifier.fillMaxWidth()) {
                     val wrap = stacked || maxWidth < 340.dp
                     val remove: @Composable () -> Unit = {
@@ -125,7 +133,7 @@ fun ExpenseForm(date: LocalDate, lines: List<ExpenseDraftLine>, onChange: (List<
                 }
             }
         }
-        TextButton(onClick = { val next = ExpenseDraftLine(UUID.randomUUID().toString()); onChange(lines + next); focusId = next.id }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+        OutlinedButton(onClick = { val next = ExpenseDraftLine(UUID.randomUUID().toString()); onChange(lines + next); focusId = next.id }, shape = MaterialTheme.shapes.medium, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp)) {
             AppIcon(R.drawable.ic_add); Spacer(Modifier.width(Space.small)); Text(stringResource(R.string.add_item))
         }
         removed?.let { line ->
@@ -141,19 +149,43 @@ fun ExpenseForm(date: LocalDate, lines: List<ExpenseDraftLine>, onChange: (List<
 }
 
 @Composable
-internal fun FormFrame(total: Long?, error: String, real: Boolean = false, onSave: () -> Unit, content: @Composable ColumnScope.() -> Unit) {
+internal fun FormFrame(total: Long?, error: String, real: Boolean = false, saving: Boolean = false, totalLabel: Int? = null, saveLabel: Int? = null, onSave: () -> Unit, content: @Composable ColumnScope.() -> Unit) {
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
         Column(Modifier.widthIn(max = 640.dp).fillMaxSize()) {
             Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(20.dp),
                 verticalArrangement = Arrangement.spacedBy(Space.medium), content = content)
             Surface(color = MaterialTheme.colorScheme.surface) {
                 Column(Modifier.fillMaxWidth().padding(horizontal = Space.large, vertical = Space.medium), verticalArrangement = Arrangement.spacedBy(Space.small)) {
-                    if (error.isNotEmpty()) Text(error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium)
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(Space.small), verticalAlignment = Alignment.CenterVertically) {
-                        Text(stringResource(if (real) R.string.total_record else R.string.total_sample), modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
-                        AmountText(total ?: 0, style = MaterialTheme.typography.titleLarge)
+                    if (error.isNotEmpty()) Text(error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
+                    MoneyRow(stringResource(totalLabel ?: if (real) R.string.total_record else R.string.total_sample), total ?: 0)
+                    Button(onClick = onSave, enabled = !saving, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp), shape = MaterialTheme.shapes.large) { Text(stringResource(saveLabel ?: if (real) R.string.save_record else R.string.save_sample)) }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ChannelSelection(value: String, onChange: (String) -> Unit) {
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        val columns = if (maxWidth >= 320.dp && LocalDensity.current.fontScale <= 1.3f) 2 else 1
+        Column(Modifier.selectableGroup(), verticalArrangement = Arrangement.spacedBy(Space.small)) {
+            SalesChannels.chunked(columns).forEach { channels ->
+                Row(horizontalArrangement = Arrangement.spacedBy(Space.small)) {
+                    channels.forEach { channel ->
+                        val active = channel == value
+                        OutlinedButton(onClick = { if (!active) onChange(channel) },
+                            shape = MaterialTheme.shapes.medium,
+                            border = BorderStroke(if (active) 2.dp else 1.dp, if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline),
+                            colors = ButtonDefaults.outlinedButtonColors(
+                                containerColor = if (active) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
+                                contentColor = if (active) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 16.dp),
+                            modifier = Modifier.weight(1f).heightIn(min = 64.dp).semantics { selected = active; role = Role.RadioButton }) {
+                            AppIcon(channelIcon(channel)); Spacer(Modifier.width(Space.small))
+                            Text(channelLabel(channel), modifier = Modifier.weight(1f), textAlign = TextAlign.Start)
+                        }
                     }
-                    Button(onClick = onSave, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp), shape = MaterialTheme.shapes.medium) { Text(stringResource(if (real) R.string.save_record else R.string.save_sample)) }
                 }
             }
         }

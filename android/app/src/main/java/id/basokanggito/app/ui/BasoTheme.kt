@@ -19,6 +19,7 @@ import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
 
 object Space {
+    val tiny = 4.dp
     val small = 8.dp
     val medium = 16.dp
     val large = 24.dp
@@ -69,7 +70,7 @@ internal val DarkColors = darkColorScheme(
 )
 
 private val BasoTypography = Typography(
-    headlineLarge = TextStyle(fontSize = 36.sp, lineHeight = 44.sp, fontWeight = FontWeight.SemiBold, letterSpacing = (-0.7).sp),
+    headlineLarge = TextStyle(fontSize = 36.sp, lineHeight = 44.sp, fontWeight = FontWeight.Bold, letterSpacing = (-0.7).sp),
     headlineMedium = TextStyle(fontSize = 28.sp, lineHeight = 36.sp, fontWeight = FontWeight.SemiBold),
     headlineSmall = TextStyle(fontSize = 24.sp, lineHeight = 32.sp, fontWeight = FontWeight.SemiBold),
     titleLarge = TextStyle(fontSize = 22.sp, lineHeight = 30.sp, fontWeight = FontWeight.SemiBold),
@@ -93,7 +94,7 @@ fun BasoTheme(darkTheme: Boolean = isSystemInDarkTheme(), content: @Composable (
     MaterialTheme(
         colorScheme = if (darkTheme) DarkColors else LightColors,
         typography = BasoTypography,
-        shapes = Shapes(small = RoundedCornerShape(8.dp), medium = RoundedCornerShape(16.dp), large = RoundedCornerShape(20.dp)),
+        shapes = Shapes(small = RoundedCornerShape(12.dp), medium = RoundedCornerShape(16.dp), large = RoundedCornerShape(24.dp)),
         content = content,
     )
 }

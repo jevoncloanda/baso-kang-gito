@@ -14,6 +14,9 @@ import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -181,9 +184,13 @@ fun FunctionalNotebook() {
         draftKind = kind; route = kind; persist()
     }
     BackHandler(!showBackup && securityScreen.isEmpty() && (route !in listOf("journal", "recap", "customers") || (route == "customers" && selectedCustomerId.isNotEmpty())) && !saving, ::back)
-    if (securityScreen == "pin") { ChangePinScreen({ securityScreen = "" }); return }
-    if (securityScreen == "devices") { DeviceManagementScreen({ securityScreen = "" }); return }
-    if (showBackup) { BackupScreen(model) { showBackup = false }; return }
+    if (securityScreen == "tools") {
+        ToolsScreen(accessState, { securityScreen = "" }, { securityScreen = ""; showBackup = true }, { securityScreen = "pin" }, { securityScreen = "devices" })
+        return
+    }
+    if (securityScreen == "pin") { ChangePinScreen({ securityScreen = "tools" }); return }
+    if (securityScreen == "devices") { DeviceManagementScreen({ securityScreen = "tools" }); return }
+    if (showBackup) { BackupScreen(model) { showBackup = false; securityScreen = "tools" }; return }
     if (!state.loaded || !draftLoaded) { Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }; return }
     if (state.unreadable || error == "draft_unreadable") { Text(stringResource(if (state.unreadable) R.string.storage_unreadable else R.string.draft_unreadable), Modifier.padding(24.dp)); return }
     val entries = presentation(state)
@@ -210,25 +217,19 @@ fun FunctionalNotebook() {
                         if (nested) IconButton(onClick = ::back, enabled = !saving, modifier = Modifier.size(48.dp)) { AppIcon(R.drawable.ic_back, description = stringResource(R.string.back)) }
                         Text(stringResource(when (route) { "sale" -> R.string.add_sale; "expense" -> R.string.add_shopping; "receipt" -> R.string.add_receipt; "detail" -> R.string.details; "recap" -> R.string.monthly_recap; "customers" -> R.string.customers_bon; "customer_picker" -> R.string.select_customer; "customer_form" -> R.string.customer_details; else -> R.string.daily_book }), style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
                         LanguageMenu()
-                        var utilities by remember { mutableStateOf(false) }
-                        Box {
-                            TextButton(onClick = { utilities = true }) { Text(stringResource(R.string.backup_menu)) }
-                            DropdownMenu(expanded = utilities, onDismissRequest = { utilities = false }) {
-                                DropdownMenuItem(text = { Text(stringResource(R.string.backup_title)) }, onClick = { utilities = false; keyboard?.hide(); showBackup = true })
-                                DropdownMenuItem(text = { Text(stringResource(R.string.pin_change)) }, onClick = { utilities = false; keyboard?.hide(); securityScreen = "pin" })
-                                if (accessState.role == "admin") DropdownMenuItem(text = { Text(stringResource(R.string.access_devices)) }, onClick = { utilities = false; keyboard?.hide(); securityScreen = "devices" })
-                            }
-                        }
+                        TextButton(onClick = { keyboard?.hide(); securityScreen = "tools" }) { Text(stringResource(R.string.backup_menu)) }
                     }
-                    Surface(color = MaterialTheme.colorScheme.secondaryContainer) {
+                    val syncProblem = state.pending.any { it.state == "failed" } || state.meta["syncError"].orEmpty().isNotEmpty()
+                    Surface(color = if (syncProblem) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.secondaryContainer,
+                        contentColor = if (syncProblem) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onSecondaryContainer) {
                         Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                             Text(stringResource(when { state.pending.any { it.state == "failed" } -> R.string.sync_review
                                 state.meta["syncError"].orEmpty().isNotEmpty() -> R.string.sync_connection
                                 !syncConfigured() -> R.string.sync_not_configured
                                 state.pending.isNotEmpty() -> R.string.sync_pending
                                 state.meta["lastSync"].orEmpty().isNotEmpty() -> R.string.sync_complete
-                                else -> R.string.local_development }), style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.onSecondaryContainer, modifier = Modifier.weight(1f).padding(vertical = 6.dp))
+                                else -> R.string.local_development }), style = MaterialTheme.typography.labelLarge,
+                                modifier = Modifier.weight(1f).padding(vertical = 6.dp).semantics { liveRegion = LiveRegionMode.Polite })
                             if (syncConfigured()) TextButton(onClick = { model.retry(); scheduleSync(context) }, modifier = Modifier.heightIn(min = 48.dp)) { Text(stringResource(R.string.sync_now)) }
                         }
                     }
@@ -246,27 +247,28 @@ fun FunctionalNotebook() {
                         "sale" -> SaleForm(date, sale, { changed ->
                             val aggregate = if (baseVersion == 0 && changed.channel != "Langsung") state.records.find { !it.voided && it.kind == "sale" && it.date == dateText && it.channel == channelCode(changed.channel) } else null
                             if (aggregate != null) begin("sale", aggregate) else { sale = changed; persist() }
-                        }, formError, real = true, editing = baseVersion > 0, onDate = { dateText = it.toString(); persist() }, customerControl = {
+                        }, formError, real = true, editing = baseVersion > 0, saving = saving, onDate = { dateText = it.toString(); persist() }, customerControl = {
                             CustomerSaleControl(sale, { sale = it; persist() }, { route = "customer_picker"; persist() })
                         }, extra = {
                             if (baseVersion > 0) EntryInput(stringResource(R.string.correction_reason), reason, { reason = it; persist() })
-                            TextButton(onClick = { sale = SaleDraft(); draftKind = ""; recoveredEdit = ""; route = "journal"; model.draft("") }) { Text(stringResource(R.string.discard_draft)) }
+                            TextButton(onClick = { sale = SaleDraft(); draftKind = ""; recoveredEdit = ""; route = "journal"; model.draft("") }, enabled = !saving) { Text(stringResource(R.string.discard_draft)) }
                         }) {
                             val data = JSONObject().put("date", dateText).put("amount", sale.amount).put("channel", channelCode(sale.channel)).put("customer", sale.customer).put("customerId", sale.customerId ?: JSONObject.NULL).put("note", sale.note)
                             if (baseVersion == 0) data.put("paid", sale.paid).apply { if (sale.paid) { put("receiptId", newId()).put("method", sale.method); if (sale.paymentAmount.isNotEmpty()) put("paymentAmount", sale.paymentAmount) } }
                             else data.put("reason", reason)
                             model.submit("save_sale", recordId, baseVersion, data)
                         }
-                        "expense" -> ExpenseForm(date, expense, { expense = ArrayList(it); persist() }, formError, real = true, onDate = { dateText = it.toString(); persist() }, extra = {
+                        "expense" -> ExpenseForm(date, expense, { expense = ArrayList(it); persist() }, formError, real = true, saving = saving, onDate = { dateText = it.toString(); persist() }, extra = {
                             if (baseVersion > 0) EntryInput(stringResource(R.string.correction_reason), reason, { reason = it; persist() })
-                            TextButton(onClick = { expense = arrayListOf(ExpenseDraftLine(newId())); draftKind = ""; recoveredEdit = ""; route = "journal"; model.draft("") }) { Text(stringResource(R.string.discard_draft)) }
+                            TextButton(onClick = { expense = arrayListOf(ExpenseDraftLine(newId())); draftKind = ""; recoveredEdit = ""; route = "journal"; model.draft("") }, enabled = !saving) { Text(stringResource(R.string.discard_draft)) }
                         }) {
                             val data = JSONObject().put("date", dateText).put("reason", reason).put("items", JSONArray(expense.filter { it.name.isNotBlank() || it.amount.isNotBlank() }.map {
                                 JSONObject().put("id", it.id).put("name", it.name).put("amount", it.amount)
                             }))
                             model.submit("save_expense", recordId, baseVersion, data)
                         }
-                        "receipt" -> ReceiptForm(LocalDate.parse(receiptDate), receiptAmount, receiptMethod, formError, state.records.find { it.id == recordId }?.let { it.amount - it.received },
+                        "receipt" -> ReceiptForm(LocalDate.parse(receiptDate), receiptAmount, receiptMethod, formError, state.records.find { it.id == recordId },
+                            customer = state.customers.find { it.id == state.records.find { row -> row.id == recordId }?.customerId }, saving = saving,
                             recoveryCount = state.meta["paymentRecovery"]?.takeIf { it.isNotEmpty() }?.let { JSONObject(it).optJSONArray("remaining").objects().size + 1 } ?: 0,
                             onDiscard = { model.discardPaymentDraft { route = "detail"; draftKind = ""; model.error.value = "" } },
                             onDate = { receiptDate = it.toString(); persist() }, onAmount = { receiptAmount = it; persist() }, onMethod = { receiptMethod = it; persist() }) {
@@ -336,23 +338,44 @@ internal fun BusinessDateControl(date: LocalDate, onDate: (LocalDate) -> Unit) {
 internal fun PaymentMethod(method: String, onMethod: (String) -> Unit) {
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         listOf("cash" to R.string.cash, "transfer" to R.string.transfer).forEach { (id, label) ->
-            FilterChip(selected = method == id, onClick = { onMethod(id) }, label = { Text(stringResource(label)) }, modifier = Modifier.heightIn(min = 48.dp))
+            FilterChip(selected = method == id, onClick = { onMethod(id) }, label = { Text(stringResource(label)) },
+                colors = FilterChipDefaults.filterChipColors(selectedContainerColor = MaterialTheme.colorScheme.primaryContainer, selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer),
+                modifier = Modifier.heightIn(min = 48.dp))
         }
     }
 }
 
 @Composable
-private fun ReceiptForm(date: LocalDate, amount: String, method: String, error: String, remaining: Long?, recoveryCount: Int, onDiscard: () -> Unit, onDate: (LocalDate) -> Unit, onAmount: (String) -> Unit, onMethod: (String) -> Unit, onSave: () -> Unit) {
-    FormFrame(total = positiveAmount(amount), error = error, real = true, onSave = onSave) {
+private fun ReceiptForm(date: LocalDate, amount: String, method: String, error: String, record: BookRecord?, customer: Customer?, saving: Boolean, recoveryCount: Int, onDiscard: () -> Unit, onDate: (LocalDate) -> Unit, onAmount: (String) -> Unit, onMethod: (String) -> Unit, onSave: () -> Unit) {
+    val remaining = record?.let { it.amount - it.received }
+    val entered = positiveAmount(amount)
+    FormFrame(total = entered, error = error, real = true, saving = saving, totalLabel = R.string.bon_new_payment, saveLabel = R.string.save_payment, onSave = onSave) {
+        if (record != null) Surface(shape = MaterialTheme.shapes.large) {
+            Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(Space.medium)) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Space.medium)) {
+                    CustomerAvatar(record.customer.ifEmpty { channelLabel(displayChannel(record.channel)) })
+                    Column(Modifier.weight(1f)) {
+                        SectionTitle(record.customer.ifEmpty { channelLabel(displayChannel(record.channel)) })
+                        customer?.phone?.takeIf { it.isNotBlank() }?.let { Text(it, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                    }
+                }
+                Text(stringResource(R.string.customer_sale_date, dateLabel(LocalDate.parse(record.date))), style = MaterialTheme.typography.bodyMedium)
+                BonBalanceSummary(record.amount, record.received, remaining ?: 0, R.string.bon_original, R.string.bon_before_payment)
+            }
+        }
+        EntryInput(stringResource(R.string.receipt_amount), amount, onAmount, money = true, prominent = true,
+            error = if (remaining != null && entered != null && entered > remaining) stringResource(R.string.payment_constraint) else null,
+            imeAction = androidx.compose.ui.text.input.ImeAction.Done)
+        SectionTitle(stringResource(R.string.payment_date))
         BusinessDateControl(date, onDate)
-        EntryInput(stringResource(R.string.receipt_amount), amount, onAmount, money = true, prominent = true)
+        SectionTitle(stringResource(R.string.payment_method))
         PaymentMethod(method, onMethod)
         if (recoveryCount > 0) Text(stringResource(R.string.payment_drafts_review, recoveryCount))
         if (remaining != null) {
-            MoneyRow(stringResource(R.string.unpaid), remaining)
-            positiveAmount(amount)?.takeIf { it <= remaining }?.let { MoneyRow(stringResource(R.string.balance_after_payment), remaining - it) }
+            MoneyRow(stringResource(R.string.bon_before_payment), remaining)
+            entered?.takeIf { it <= remaining }?.let { MoneyRow(stringResource(R.string.balance_after_payment), remaining - it) }
         }
-        TextButton(onClick = onDiscard) { Text(stringResource(if (recoveryCount > 1) R.string.discard_payment_drafts else R.string.discard_draft)) }
+        TextButton(onClick = onDiscard, enabled = !saving) { Text(stringResource(if (recoveryCount > 1) R.string.discard_payment_drafts else R.string.discard_draft)) }
     }
 }
 
@@ -365,10 +388,15 @@ private fun RecordDetail(record: BookRecord, state: NotebookState, notice: Boole
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
         Column(Modifier.widthIn(max = 640.dp).fillMaxHeight().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(20.dp)) {
             if (notice) Text(stringResource(R.string.saved_local), color = MaterialTheme.colorScheme.primary)
-            SectionTitle(if (record.kind == "expense") stringResource(R.string.shopping) else stringResource(R.string.sale_title, channelLabel(displayChannel(record.channel))))
-            Text(dateLabel(LocalDate.parse(record.date)))
-            AmountText(record.amount, style = MaterialTheme.typography.headlineLarge)
-            if (record.voided) Text(stringResource(R.string.voided))
+            Surface(shape = MaterialTheme.shapes.large) {
+                Column(Modifier.fillMaxWidth().padding(Space.large), verticalArrangement = Arrangement.spacedBy(Space.small)) {
+                    IconBadge(if (record.kind == "expense") R.drawable.ic_shopping else channelIcon(displayChannel(record.channel)))
+                    SectionTitle(if (record.kind == "expense") stringResource(R.string.shopping) else stringResource(R.string.sale_title, channelLabel(displayChannel(record.channel))))
+                    Text(dateLabel(LocalDate.parse(record.date)), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    AmountText(record.amount, style = MaterialTheme.typography.headlineLarge)
+                    if (record.voided) Text(stringResource(R.string.voided))
+                }
+            }
             if (failed != null) {
                 Text(stringResource(R.string.conflict_hint), color = MaterialTheme.colorScheme.error)
                 val remote = state.meta["conflict:${record.id}"]?.takeIf { it.isNotEmpty() }
@@ -400,19 +428,19 @@ private fun RecordDetail(record: BookRecord, state: NotebookState, notice: Boole
                         MoneyRow(dateLabel(LocalDate.parse(payment.date)), payment.amount)
                         Text(stringResource(if (payment.method == "cash") R.string.cash else R.string.transfer))
                         if (payment.voided) Text(stringResource(R.string.voided))
-                        else if (!record.voided) TextButton(onClick = { voidTarget = payment.id; voidVersion = record.version }) { Text(stringResource(R.string.void_payment)) }
+                        else if (!record.voided) TextButton(onClick = { voidTarget = payment.id; voidVersion = record.version }, colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)) { Text(stringResource(R.string.void_payment)) }
                     }
                 }
                 if (!record.voided && record.received < record.amount) Button(onClick = onReceipt, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp)) { Text(stringResource(R.string.add_receipt)) }
             }
             if (!record.voided) {
                 Button(onClick = onEdit, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp)) { Text(stringResource(R.string.edit_record)) }
-                TextButton(onClick = { voidTarget = ""; voidVersion = record.version }) { Text(stringResource(R.string.void_record)) }
+                TextButton(onClick = { voidTarget = ""; voidVersion = record.version }, colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)) { Text(stringResource(R.string.void_record)) }
             }
             if (voidTarget != null) {
                 Text(stringResource(if (voidTarget!!.isEmpty()) R.string.void_effect else R.string.void_payment_effect, rupiah(if (voidTarget!!.isEmpty()) record.received else record.receipts.first { it.id == voidTarget }.amount)))
                 EntryInput(stringResource(R.string.correction_reason), reason, { reason = it })
-                Button(onClick = { onVoid(voidTarget!!, reason, voidVersion); voidTarget = null }, enabled = reason.isNotBlank(), modifier = Modifier.heightIn(min = 56.dp)) { Text(stringResource(R.string.confirm_void)) }
+                Button(onClick = { onVoid(voidTarget!!, reason, voidVersion); voidTarget = null }, enabled = reason.isNotBlank(), colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error, contentColor = MaterialTheme.colorScheme.onError), modifier = Modifier.heightIn(min = 56.dp)) { Text(stringResource(R.string.confirm_void)) }
                 TextButton(onClick = { voidTarget = null }) { Text(stringResource(R.string.cancel)) }
             }
         }

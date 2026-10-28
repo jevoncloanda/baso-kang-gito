@@ -6,20 +6,21 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -71,43 +72,57 @@ fun BackupScreen(model: NotebookViewModel, restoreOnly: Boolean = false, onBack:
         }
     }
     BackHandler { if (!busy) { backup.cancel(); onBack() } }
-    Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background, contentColor = MaterialTheme.colorScheme.onBackground) {
-    Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().imePadding().verticalScroll(rememberScrollState()).padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-        Column(Modifier.widthIn(max = 640.dp).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-            TextButton(onClick = { backup.cancel(); onBack() }, enabled = !busy, modifier = Modifier.heightIn(min = 48.dp)) { Text(stringResource(R.string.backup_back)) }
-            Text(stringResource(R.string.backup_title), style = MaterialTheme.typography.headlineMedium)
-            Text(stringResource(R.string.backup_explanation))
-            Text(stringResource(R.string.backup_password_warning))
-            notebook.meta["lastBackupAt"]?.takeUnless { restoreOnly }?.let { raw ->
-                runCatching { DateTimeFormatter.ofLocalizedDateTime(FormatStyle.MEDIUM).withZone(ZoneId.systemDefault()).format(Instant.parse(raw)) }.getOrNull()?.let { date ->
-                    Text(stringResource(R.string.backup_last_saved, date))
-                    Text(stringResource(R.string.backup_last_caveat), style = MaterialTheme.typography.bodySmall)
-                }
-            }
+    val locale = LocalConfiguration.current.locales[0]
+    val dateFormat = DateTimeFormatter.ofLocalizedDateTime(FormatStyle.MEDIUM).withLocale(locale).withZone(ZoneId.systemDefault())
+    val passwordInput: @Composable () -> Unit = {
+        OutlinedTextField(value = password, onValueChange = { backup.password.value = it }, label = { Text(stringResource(R.string.backup_password_label)) }, singleLine = true, enabled = !busy,
+            shape = MaterialTheme.shapes.medium,
+            visualTransformation = if (visible) VisualTransformation.None else PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+            trailingIcon = { TextButton(onClick = { visible = !visible }, modifier = Modifier.heightIn(min = 48.dp)) { Text(stringResource(if (visible) R.string.backup_hide else R.string.backup_show)) } },
+            modifier = Modifier.fillMaxWidth().testTag("backup_password"))
+    }
+    UtilityPage(R.string.backup_title, { backup.cancel(); onBack() }, backEnabled = !busy) {
             prepared?.let { stage ->
-                val date = DateTimeFormatter.ofLocalizedDateTime(FormatStyle.MEDIUM).withZone(ZoneId.systemDefault()).format(Instant.ofEpochMilli(stage.header.createdAt))
-                Text(stringResource(R.string.backup_preview_title), style = MaterialTheme.typography.titleLarge)
+                val date = dateFormat.format(Instant.ofEpochMilli(stage.header.createdAt))
+                UtilitySection(R.string.backup_preview_title, R.drawable.ic_restore) {
                 Text(stringResource(R.string.backup_preview_version, date, stage.header.appVersion, stage.header.format, stage.header.schema))
                 Text(stringResource(R.string.backup_preview_counts, stage.summary.records, stage.summary.customers, stage.summary.operations, stage.summary.pending, stage.summary.failed))
                 Text(stringResource(if (stage.summary.hasDrafts) R.string.backup_drafts_yes else R.string.backup_drafts_no))
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 Text(stringResource(if (empty) R.string.backup_empty_ready else R.string.backup_not_empty), color = if (empty) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.error)
                 Button(onClick = { confirmRestore = true }, enabled = !busy && empty, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp).testTag("backup_confirm")) { Text(stringResource(R.string.backup_restore)) }
                 OutlinedButton(onClick = backup::cancel, enabled = !busy, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp)) { Text(stringResource(R.string.backup_cancel)) }
+                }
             } ?: run {
-                if (selected != null) Text(stringResource(R.string.backup_file_selected))
-                OutlinedTextField(value = password, onValueChange = { backup.password.value = it }, label = { Text(stringResource(R.string.backup_password_label)) }, singleLine = true, enabled = !busy,
-                    visualTransformation = if (visible) VisualTransformation.None else PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                    trailingIcon = { TextButton(onClick = { visible = !visible }, modifier = Modifier.heightIn(min = 48.dp)) { Text(stringResource(if (visible) R.string.backup_hide else R.string.backup_show)) } },
-                    modifier = Modifier.fillMaxWidth().testTag("backup_password"))
                 if (selected == null && !restoreOnly) {
+                    UtilitySection(R.string.backup_section, R.drawable.ic_backup) {
+                    Text(stringResource(R.string.backup_explanation), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    notebook.meta["lastBackupAt"]?.let { raw ->
+                        runCatching { dateFormat.format(Instant.parse(raw)) }.getOrNull()?.let { date ->
+                            Text(stringResource(R.string.backup_last_saved, date), style = MaterialTheme.typography.titleSmall)
+                            Text(stringResource(R.string.backup_last_caveat), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                    Text(stringResource(R.string.backup_password_warning))
+                    passwordInput()
                     OutlinedTextField(value = confirmation, onValueChange = { backup.confirmation.value = it }, label = { Text(stringResource(R.string.backup_confirm_password)) }, singleLine = true, enabled = !busy,
+                        shape = MaterialTheme.shapes.medium,
                         visualTransformation = if (visible) VisualTransformation.None else PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password), modifier = Modifier.fillMaxWidth().testTag("backup_password_confirmation"))
                     Button(onClick = backup::create, enabled = !busy, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp).testTag("backup_create")) { Text(stringResource(R.string.backup_create)) }
-                } else if (selected != null) {
-                    Button(onClick = backup::inspect, enabled = !busy, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp).testTag("backup_inspect")) { Text(stringResource(R.string.backup_inspect)) }
-                    TextButton(onClick = backup::cancel, enabled = !busy, modifier = Modifier.heightIn(min = 48.dp)) { Text(stringResource(R.string.backup_cancel)) }
+                    }
                 }
-                OutlinedButton(onClick = { runCatching { open.launch(arrayOf("*/*")) }.onFailure { backup.message.value = "backup_io" } }, enabled = !busy, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp).testTag("backup_select")) { Text(stringResource(R.string.backup_select)) }
+                UtilitySection(R.string.backup_restore, R.drawable.ic_restore) {
+                    Text(stringResource(R.string.backup_restore_guidance), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    if (selected != null || restoreOnly) {
+                        if (selected != null) Text(stringResource(R.string.backup_file_selected))
+                        passwordInput()
+                    }
+                    if (selected != null) {
+                        Button(onClick = backup::inspect, enabled = !busy, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp).testTag("backup_inspect")) { Text(stringResource(R.string.backup_inspect)) }
+                        TextButton(onClick = backup::cancel, enabled = !busy, modifier = Modifier.heightIn(min = 48.dp)) { Text(stringResource(R.string.backup_cancel)) }
+                    }
+                    OutlinedButton(onClick = { runCatching { open.launch(arrayOf("*/*")) }.onFailure { backup.message.value = "backup_io" } }, enabled = !busy, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp).testTag("backup_select")) { Text(stringResource(R.string.backup_select)) }
+                }
             }
             if (busy) { LinearProgressIndicator(Modifier.fillMaxWidth()); Text(stringResource(R.string.backup_busy)) }
             if (message.isNotEmpty()) Text(stringResource(when (message) {
@@ -120,11 +135,9 @@ fun BackupScreen(model: NotebookViewModel, restoreOnly: Boolean = false, onBack:
                 "backup_not_empty" -> R.string.backup_not_empty
                 "backup_invalid" -> R.string.backup_invalid
                 else -> R.string.backup_io
-            }), color = if (message in listOf("backup_exported", "backup_restored")) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.error, modifier = Modifier.testTag("backup_result"))
+            }), color = if (message in listOf("backup_exported", "backup_restored")) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.error, modifier = Modifier.testTag("backup_result").semantics { liveRegion = LiveRegionMode.Polite })
             if (message == "backup_exported" && destinationName.isNotEmpty()) Text(stringResource(R.string.backup_exported_location, destinationName))
             if (cleanup) Text(stringResource(R.string.backup_cleanup), color = MaterialTheme.colorScheme.error)
-        }
-    }
     }
     if (confirmRestore) AlertDialog(onDismissRequest = { confirmRestore = false }, title = { Text(stringResource(R.string.backup_restore)) }, text = { Text(stringResource(R.string.backup_restore_confirmation)) },
         confirmButton = { TextButton(onClick = { confirmRestore = false; backup.restore() }) { Text(stringResource(R.string.backup_restore)) } },

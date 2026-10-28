@@ -61,8 +61,8 @@ internal fun Journal(entries: List<JournalEntry>, date: LocalDate, onDate: (Loca
 internal fun DateSelector(date: LocalDate, onDate: (LocalDate) -> Unit, onPick: (() -> Unit)? = null) {
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         IconButton(onClick = { onDate(date.minusDays(1)) }, modifier = Modifier.size(48.dp)) { AppIcon(R.drawable.ic_back, description = stringResource(R.string.previous_date)) }
-        Box(Modifier.weight(1f).then(if (onPick != null) Modifier.clickable(onClick = onPick).heightIn(min = 48.dp) else Modifier).padding(horizontal = Space.small), contentAlignment = Alignment.CenterStart) {
-            Text(dateLabel(date), style = MaterialTheme.typography.titleMedium)
+        Box(Modifier.weight(1f).then(if (onPick != null) Modifier.clickable(onClick = onPick).heightIn(min = 48.dp) else Modifier).padding(horizontal = Space.small), contentAlignment = Alignment.Center) {
+            Text(dateLabel(date), style = MaterialTheme.typography.titleMedium, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
         }
         IconButton(onClick = { onDate(date.plusDays(1)) }, modifier = Modifier.size(48.dp)) { AppIcon(R.drawable.ic_next, description = stringResource(R.string.next_date)) }
     }
@@ -72,7 +72,10 @@ internal fun DateSelector(date: LocalDate, onDate: (LocalDate) -> Unit, onPick: 
 internal fun Summary(entries: List<JournalEntry>, realTotals: BookTotals? = null) {
     Surface(shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.surface) {
         Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text(stringResource(R.string.net_sales), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Space.small)) {
+                Text(stringResource(R.string.net_sales), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f))
+                IconBadge(R.drawable.ic_chart, accent = true)
+            }
             AmountText(realTotals?.sales ?: entries.filter { !it.isExpense && !it.isReceipt && !it.voided }.sumOf { it.amount }, style = MaterialTheme.typography.headlineLarge,
                 modifier = Modifier.testTag("sales-total"))
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
@@ -89,7 +92,10 @@ internal fun Summary(entries: List<JournalEntry>, realTotals: BookTotals? = null
                     AmountText(realTotals?.expenses ?: entries.filter { it.isExpense }.sumOf { it.amount }, style = MaterialTheme.typography.titleMedium)
                 }
             }
-            if (realTotals != null) MoneyRow(stringResource(R.string.cash_difference), realTotals.cashDifference)
+            if (realTotals != null) {
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                MoneyRow(stringResource(R.string.cash_difference), realTotals.cashDifference)
+            }
         }
     }
 }
@@ -134,7 +140,7 @@ internal fun History(entries: List<JournalEntry>, modifier: Modifier = Modifier,
                 else ContentState(ContentStatus.Empty)
             }
             entries.forEachIndexed { index, entry ->
-                TransactionRow(entry, onClick = { onEntry(entry) })
+                TransactionRow(entry, showPending = !real, onClick = { onEntry(entry) })
                 if (index != entries.lastIndex) HorizontalDivider(Modifier.padding(horizontal = Space.medium), color = MaterialTheme.colorScheme.outlineVariant)
             }
         }
@@ -142,12 +148,12 @@ internal fun History(entries: List<JournalEntry>, modifier: Modifier = Modifier,
 }
 
 @Composable
-fun TransactionRow(entry: JournalEntry, onClick: () -> Unit) {
+fun TransactionRow(entry: JournalEntry, showPending: Boolean = true, onClick: () -> Unit) {
     val largeText = LocalDensity.current.fontScale > 1.3f
     Row(Modifier.fillMaxWidth().clickable(onClickLabel = stringResource(R.string.view_details, entryTitle(entry)), onClick = onClick)
         .semantics(mergeDescendants = true) {}.padding(horizontal = Space.medium, vertical = 12.dp).heightIn(min = 56.dp),
         horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.Top) {
-        AppIcon(if (entry.isExpense) R.drawable.ic_shopping else R.drawable.ic_sale, modifier = Modifier.padding(top = 4.dp))
+        IconBadge(if (entry.isExpense) R.drawable.ic_shopping else R.drawable.ic_sale, accent = entry.isExpense)
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(entryTitle(entry), style = MaterialTheme.typography.labelLarge)
             Text(if (entry.isExpense) pluralStringResource(R.plurals.item_count, entry.lines.size, entry.lines.size) else entry.customer.ifEmpty { if (entry.channel == "Langsung") stringResource(R.string.no_customer) else stringResource(R.string.daily_total) },
@@ -155,10 +161,13 @@ fun TransactionRow(entry: JournalEntry, onClick: () -> Unit) {
             if (entry.voided) Text(stringResource(R.string.voided), style = MaterialTheme.typography.bodyMedium)
             else if (!entry.isExpense && !entry.isReceipt) Text(stringResource(if (entry.received == entry.amount) R.string.paid else R.string.unpaid), style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
-            if (entry.syncState.isNotEmpty()) Text(stringResource(if (entry.syncState == "failed") R.string.sync_review else R.string.sync_pending), style = MaterialTheme.typography.labelMedium)
+            if (entry.syncState == "failed" || (showPending && entry.syncState.isNotEmpty())) Text(stringResource(if (entry.syncState == "failed") R.string.sync_review else R.string.sync_pending),
+                color = if (entry.syncState == "failed") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.labelMedium)
             if (largeText) AmountText(entry.amount, style = MaterialTheme.typography.titleMedium)
         }
         if (!largeText) AmountText(entry.amount, style = MaterialTheme.typography.titleMedium)
+        if (!largeText) AppIcon(R.drawable.ic_next, modifier = Modifier.padding(top = 2.dp))
     }
 }
 
@@ -193,38 +202,62 @@ internal fun Detail(entry: JournalEntry, notice: String, onEdit: () -> Unit) {
 @Composable
 internal fun MonthlyRecap(entries: List<JournalEntry>, month: YearMonth, onMonth: (YearMonth) -> Unit, realRecords: List<BookRecord>? = null, onDay: (String) -> Unit) {
     val monthly = entries.filter { YearMonth.from(LocalDate.parse(it.date)) == month }
-    val realTotals = realRecords?.let { totals(it, month.atDay(1).toString(), month.plusMonths(1).atDay(1).toString()) }
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(20.dp)) {
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+    val days = recapDays(entries, month, realRecords)
+    val figures = BookTotals(days.fold(java.math.BigInteger.ZERO) { sum, day -> sum + day.figures.sales },
+        days.fold(java.math.BigInteger.ZERO) { sum, day -> sum + day.figures.received },
+        days.fold(java.math.BigInteger.ZERO) { sum, day -> sum + day.figures.expenses })
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
+    Column(Modifier.widthIn(max = 1200.dp).fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(20.dp)) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = { onMonth(month.minusMonths(1)) }, modifier = Modifier.size(48.dp)) { AppIcon(R.drawable.ic_back, description = stringResource(R.string.previous_month)) }
-            Text(month.format(DateTimeFormatter.ofPattern("MMMM yyyy", LocalConfiguration.current.locales[0])), style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f).padding(horizontal = Space.small))
+            Text(month.format(DateTimeFormatter.ofPattern("MMMM yyyy", LocalConfiguration.current.locales[0])), style = MaterialTheme.typography.titleLarge,
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center, modifier = Modifier.weight(1f).padding(horizontal = Space.small))
             IconButton(onClick = { onMonth(month.plusMonths(1)) }, modifier = Modifier.size(48.dp)) { AppIcon(R.drawable.ic_next, description = stringResource(R.string.next_month)) }
         }
         BoxWithConstraints {
             if (maxWidth >= 840.dp) Row(horizontalArrangement = Arrangement.spacedBy(Space.section), verticalAlignment = Alignment.Top) {
-                Column(Modifier.width(320.dp)) { Summary(monthly, realTotals) }
-                ChannelSummary(monthly, Modifier.weight(1f))
-            } else Column(verticalArrangement = Arrangement.spacedBy(Space.large)) { Summary(monthly, realTotals); ChannelSummary(monthly) }
+                Column(Modifier.width(360.dp)) { MonthlySummary(figures) }
+                MonthlyChart(days, month, Modifier.weight(1f))
+            } else Column(verticalArrangement = Arrangement.spacedBy(Space.large)) { MonthlySummary(figures); MonthlyChart(days, month) }
         }
+        ChannelSummary(monthly)
         SectionTitle(stringResource(R.string.by_day))
         if (monthly.isEmpty()) Text(stringResource(if (realRecords == null) R.string.month_empty else R.string.month_empty_records))
-        monthly.groupBy { it.date }.toSortedMap(compareByDescending { it }).forEach { (day, daily) ->
-            Surface(shape = MaterialTheme.shapes.medium, modifier = Modifier.fillMaxWidth().clickable { onDay(day) }) {
+        days.filter { it.hasRecords }.asReversed().forEach { day ->
+            Surface(shape = MaterialTheme.shapes.large, modifier = Modifier.fillMaxWidth().testTag("recap-day-${day.date}").clickable(role = Role.Button) { onDay(day.date.toString()) }) {
                 Column(Modifier.padding(Space.medium), verticalArrangement = Arrangement.spacedBy(Space.small)) {
-                    Text(dateLabel(LocalDate.parse(day)), style = MaterialTheme.typography.titleMedium)
-                    MoneyRow(stringResource(R.string.net_sales), daily.filter { !it.isExpense && !it.isReceipt && !it.voided }.fold(java.math.BigInteger.ZERO) { sum, entry -> sum + entry.amount.toBigInteger() })
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(dateLabel(day.date), style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                        AppIcon(R.drawable.ic_next)
+                    }
+                    MoneyRow(stringResource(R.string.net_sales), day.figures.sales)
+                    MoneyRow(stringResource(R.string.shopping), day.figures.expenses)
+                    MoneyRow(stringResource(R.string.received), day.figures.received)
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                    MoneyRow(stringResource(R.string.sales_shopping_difference), day.figures.sales - day.figures.expenses)
                 }
             }
         }
+    }
     }
 }
 
 @Composable
 internal fun ChannelSummary(entries: List<JournalEntry>, modifier: Modifier = Modifier) {
     Surface(modifier.fillMaxWidth(), shape = MaterialTheme.shapes.medium) {
-        Column(Modifier.padding(Space.large), verticalArrangement = Arrangement.spacedBy(Space.medium)) {
+        Column(Modifier.padding(Space.medium), verticalArrangement = Arrangement.spacedBy(Space.small)) {
             SectionTitle(stringResource(R.string.by_channel))
-            SalesChannels.forEach { channel -> MoneyRow(channelLabel(channel), entries.filter { !it.isExpense && !it.isReceipt && !it.voided && it.channel == channel }.fold(java.math.BigInteger.ZERO) { sum, entry -> sum + entry.amount.toBigInteger() }) }
+            Column {
+                SalesChannels.forEachIndexed { index, channel ->
+                    Row(Modifier.padding(vertical = Space.tiny), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Space.small)) {
+                        IconBadge(channelIcon(channel), accent = channel == "Langsung")
+                        Column(Modifier.weight(1f)) {
+                            MoneyRow(channelLabel(channel), entries.filter { !it.isExpense && !it.isReceipt && !it.voided && it.channel == channel }.fold(java.math.BigInteger.ZERO) { sum, entry -> sum + entry.amount.toBigInteger() })
+                        }
+                    }
+                    if (index != SalesChannels.lastIndex) HorizontalDivider(Modifier.padding(start = 48.dp), color = MaterialTheme.colorScheme.outlineVariant)
+                }
+            }
         }
     }
 }
