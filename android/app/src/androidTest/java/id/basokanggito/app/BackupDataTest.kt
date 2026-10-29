@@ -31,6 +31,25 @@ class BackupDataTest {
         try { action(); fail("Expected $code") } catch (error: BackupException) { assertEquals(code, error.code) }
     }
 
+    @Test fun parkedCreateDraftsRemainProtectedAndValidated() = runBlocking {
+        val db = database()
+        try {
+            val repository = NotebookRepository(db); val backup = NotebookBackup(context, repository)
+            val parked = blankDraft().put("kind", "sale")
+            parked.getJSONObject("sale").put("amount", "37000")
+            val root = blankDraft().put("createSale", parked)
+            repository.saveDraft(root.toString())
+            assertFalse(backup.isEmpty())
+            val file = backup.create(password)
+            try { file.inputStream().use { backup.inspect(it, password) }.use { assertTrue(it.summary.hasDrafts) } }
+            finally { file.delete() }
+            parked.put("createSale", blankDraft())
+            repository.saveDraft(root.toString())
+            assertFalse(backup.isEmpty())
+            failure("backup_invalid") { backup.create(password) }
+        } finally { db.close() }
+    }
+
     @Test fun exportsDuringConcurrentLocalWritesContainAtomicRootsAndTheirCompleteOutbox() = runBlocking {
         val sourceDb = database(); val source = NotebookRepository(sourceDb); val rounds = Channel<Unit>()
         val writer = launch(Dispatchers.Default) {

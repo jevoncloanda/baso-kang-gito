@@ -280,4 +280,10 @@
     <string name="access_last_admin">Enroll a replacement administrator through the operator before revoking the last administrator.</string>
     <string name="access_wrong_code">The pairing code does not match this request. Check it directly with the device owner.</string>
     <string name="access_finish_wait">Approved — waiting for the requesting device to finish registration.</string>
+    <string name="edit_sale">Edit sale</string>
+    <string name="edit_shopping">Edit shopping</string>
+    <string name="appearance">Appearance</string>
+    <string name="appearance_system">System default</string>
+    <string name="appearance_light">Light</string>
+    <string name="appearance_dark">Dark</string>
 </resources>

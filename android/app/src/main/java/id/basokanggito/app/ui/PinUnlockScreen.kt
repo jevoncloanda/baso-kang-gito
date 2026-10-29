@@ -52,10 +52,6 @@ internal fun PinUnlockScreen(
                             .then(if (index < pin.length) Modifier.background(MaterialTheme.colorScheme.primary, CircleShape) else Modifier))
                     }
                 }
-                Column(verticalArrangement = Arrangement.spacedBy(Space.small), modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite }) {
-                    if (busy) Text(stringResource(R.string.pin_verifying))
-                    feedback()
-                }
                 Column(verticalArrangement = Arrangement.spacedBy(Space.small)) {
                     listOf(listOf(1, 2, 3), listOf(4, 5, 6), listOf(7, 8, 9), listOf(-1, 0, -2)).forEach { row ->
                         Row(horizontalArrangement = Arrangement.spacedBy(Space.small)) {
@@ -87,6 +83,10 @@ internal fun PinUnlockScreen(
                 }
                 TextButton(onClick = onRecovery, enabled = !busy, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
                     Text(stringResource(R.string.pin_forgot))
+                }
+                Column(verticalArrangement = Arrangement.spacedBy(Space.small), modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite }) {
+                    if (busy) Text(stringResource(R.string.pin_verifying))
+                    feedback()
                 }
             }
         }

@@ -118,6 +118,7 @@ class NotebookBackup(context: Context, private val repository: NotebookRepositor
     private fun emptyDraft(draft: JSONObject): Boolean {
         validateDraft(draft)
         if (draft.optInt("version", -1) != 0 || draft.optString("reason").isNotEmpty() || draft.has("recoveredEdit")) return false
+        if (listOf("createSale", "createExpense").any { draft.optJSONObject(it)?.let { parked -> !emptyDraft(parked) } == true }) return false
         val sale = draft.optJSONObject("sale") ?: return false
         if (listOf("amount", "customer", "paymentAmount", "note").any { sale.optString(it).isNotEmpty() } || !sale.isNull("customerId")) return false
         if (draft.optString("receiptAmount").isNotEmpty()) return false
@@ -300,6 +301,14 @@ class NotebookBackup(context: Context, private val repository: NotebookRepositor
     }
 
     private fun validateDraft(draft: JSONObject, knownCustomers: Set<String>? = null) {
+        listOf("createSale" to "sale", "createExpense" to "expense").forEach { (key, kind) ->
+            if (draft.has(key)) {
+                val parked = draft.getJSONObject(key)
+                require(!parked.has("createSale") && !parked.has("createExpense") && !parked.has("recoveredEdit"))
+                require(parked.getString("kind") == kind && parked.getInt("version") == 0)
+                validateDraft(parked, knownCustomers)
+            }
+        }
         validId(draft.getString("id")); version(draft, "version"); validDate(draft.getString("date"))
         require(draft.opt("route") is String && draft.opt("reason") is String)
         require(draft.getString("kind") in listOf("", "sale", "expense", "receipt"))

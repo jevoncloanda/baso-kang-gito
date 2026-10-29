@@ -81,18 +81,19 @@ private val BasoTypography = Typography(
 )
 
 @Composable
-fun BasoTheme(darkTheme: Boolean = isSystemInDarkTheme(), content: @Composable () -> Unit) {
+fun BasoTheme(darkTheme: Boolean? = null, content: @Composable () -> Unit) {
+    val dark = darkTheme ?: rememberAppAppearance().isDark(isSystemInDarkTheme())
     val view = LocalView.current
     if (!view.isInEditMode) SideEffect {
         (view.context as? Activity)?.window?.let { window ->
             WindowCompat.getInsetsController(window, view).apply {
-                isAppearanceLightStatusBars = !darkTheme
-                isAppearanceLightNavigationBars = !darkTheme
+                isAppearanceLightStatusBars = !dark
+                isAppearanceLightNavigationBars = !dark
             }
         }
     }
     MaterialTheme(
-        colorScheme = if (darkTheme) DarkColors else LightColors,
+        colorScheme = if (dark) DarkColors else LightColors,
         typography = BasoTypography,
         shapes = Shapes(small = RoundedCornerShape(12.dp), medium = RoundedCornerShape(16.dp), large = RoundedCornerShape(24.dp)),
         content = content,

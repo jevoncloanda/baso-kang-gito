@@ -279,4 +279,10 @@
     <string name="access_last_admin">Daftarkan administrator pengganti melalui operator sebelum mencabut administrator terakhir.</string>
     <string name="access_wrong_code">Kode tidak cocok dengan permintaan ini. Periksa langsung bersama pemilik perangkat.</string>
     <string name="access_finish_wait">Disetujui — menunggu perangkat menyelesaikan pendaftaran.</string>
+    <string name="edit_sale">Ubah penjualan</string>
+    <string name="edit_shopping">Ubah belanja</string>
+    <string name="appearance">Tampilan</string>
+    <string name="appearance_system">Ikuti sistem</string>
+    <string name="appearance_light">Terang</string>
+    <string name="appearance_dark">Gelap</string>
 </resources>

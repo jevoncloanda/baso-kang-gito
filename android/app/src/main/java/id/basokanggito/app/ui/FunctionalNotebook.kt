@@ -72,12 +72,42 @@ fun FunctionalNotebook() {
     var notice by rememberSaveable { mutableStateOf(false) }
     var recoveredEdit by rememberSaveable { mutableStateOf("") }
     val keyboard = LocalSoftwareKeyboardController.current
-    fun persist() {
-        model.draft(JSONObject().put("route", route).put("date", dateText).put("kind", draftKind).put("id", recordId).put("version", baseVersion).put("reason", reason)
+    var createSale by rememberSaveable { mutableStateOf("") }
+    var createExpense by rememberSaveable { mutableStateOf("") }
+    fun draftJson(): JSONObject = JSONObject().put("route", route).put("date", dateText).put("kind", draftKind).put("id", recordId).put("version", baseVersion).put("reason", reason)
             .put("sale", JSONObject().put("amount", sale.amount).put("customer", sale.customer).put("customerId", sale.customerId ?: JSONObject.NULL).put("paymentAmount", sale.paymentAmount).put("channel", sale.channel).put("paid", sale.paid).put("note", sale.note).put("method", sale.method))
             .put("expense", JSONArray(expense.map { JSONObject().put("id", it.id).put("name", it.name).put("amount", it.amount) }))
             .put("receiptAmount", receiptAmount).put("receiptDate", receiptDate).put("receiptMethod", receiptMethod).put("receiptId", receiptId)
-            .apply { if (recoveredEdit.isNotEmpty()) put("recoveredEdit", JSONObject(recoveredEdit)) }.toString())
+            .apply { if (recoveredEdit.isNotEmpty()) put("recoveredEdit", JSONObject(recoveredEdit)) }
+    fun persist() {
+        val draft = draftJson()
+        if (baseVersion == 0 && recoveredEdit.isEmpty()) {
+            if (draftKind == "sale") createSale = draft.toString()
+            if (draftKind == "expense") createExpense = draft.toString()
+        }
+        model.draft(draft.apply {
+            if (createSale.isNotEmpty()) put("createSale", JSONObject(createSale))
+            if (createExpense.isNotEmpty()) put("createExpense", JSONObject(createExpense))
+        }.toString())
+    }
+    fun restoreDraft(draft: JSONObject) {
+        val s = draft.getJSONObject("sale")
+        recoveredEdit = draft.optJSONObject("recoveredEdit")?.toString().orEmpty()
+        dateText = validDate(draft.getString("date")); recordId = validId(draft.getString("id")); baseVersion = draft.getInt("version")
+        draftKind = draft.getString("kind"); reason = draft.getString("reason")
+        sale = SaleDraft(s.getString("amount"), s.getString("customer"), s.getString("channel"), s.getBoolean("paid"), s.getString("note"), s.getString("method"),
+            s.optString("customerId").takeUnless { it.isEmpty() || it == "null" }, s.optString("paymentAmount"))
+        expense = ArrayList(draft.getJSONArray("expense").objects().map { ExpenseDraftLine(it.getString("id"), it.getString("name"), it.getString("amount")) })
+        receiptAmount = draft.getString("receiptAmount"); receiptDate = draft.getString("receiptDate"); receiptMethod = draft.getString("receiptMethod"); receiptId = draft.getString("receiptId")
+    }
+    fun discardForm() {
+        if (baseVersion == 0 && recoveredEdit.isEmpty()) {
+            if (draftKind == "sale") createSale = "" else createExpense = ""
+        }
+        sale = SaleDraft(); expense = arrayListOf(ExpenseDraftLine(newId()))
+        draftKind = ""; recoveredEdit = ""; reason = ""; baseVersion = 0; recordId = newId(); route = "journal"
+        model.draft("")
+        if (createSale.isNotEmpty() || createExpense.isNotEmpty()) persist()
     }
     fun changeCustomerDraft(draft: JSONObject) { customerDraft = draft.toString(); model.customerDraft(customerDraft) }
     fun beginCustomer(customer: Customer? = null) {
@@ -115,21 +145,27 @@ fun FunctionalNotebook() {
                 route = "journal"; selectedId = ""; selectedCustomerId = ""; customerDraft = ""
                 sale = SaleDraft(); expense = arrayListOf(ExpenseDraftLine(newId()))
                 draftKind = ""; recoveredEdit = ""; reason = ""; baseVersion = 0; recordId = newId()
-                receiptAmount = ""; receiptId = newId()
+                receiptAmount = ""; receiptId = newId(); createSale = ""; createExpense = ""
+            }
+            metadata["draft"]?.takeIf { it.isNotEmpty() }?.let { raw ->
+                runCatching {
+                    val draft = JSONObject(raw)
+                    createSale = draft.optJSONObject("createSale")?.toString().orEmpty()
+                    createExpense = draft.optJSONObject("createExpense")?.toString().orEmpty()
+                    // Older installations kept the active create draft at the root only.
+                    if (draft.getInt("version") == 0 && !draft.has("recoveredEdit")) {
+                        if (draft.getString("kind") == "sale") createSale = JSONObject(raw).apply { remove("createSale"); remove("createExpense") }.toString()
+                        if (draft.getString("kind") == "expense") createExpense = JSONObject(raw).apply { remove("createSale"); remove("createExpense") }.toString()
+                    }
+                }.onFailure { model.error.value = "draft_unreadable" }
             }
             val recovered = metadata["recoveredEdit"]?.takeIf { it.isNotEmpty() }
             if (recovered != null) {
                 runCatching { restoreEdit(RecoveredEdit.parse(recovered)) }.onFailure { model.error.value = "draft_unreadable" }
             } else metadata["draft"]?.takeIf { it.isNotEmpty() }?.let { raw ->
                 runCatching {
-                    val draft = JSONObject(raw); val s = draft.getJSONObject("sale")
-                    recoveredEdit = draft.optJSONObject("recoveredEdit")?.toString().orEmpty()
-                    dateText = validDate(draft.getString("date")); recordId = validId(draft.getString("id")); baseVersion = draft.getInt("version")
-                    draftKind = draft.getString("kind"); reason = draft.getString("reason")
-                    sale = SaleDraft(s.getString("amount"), s.getString("customer"), s.getString("channel"), s.getBoolean("paid"), s.getString("note"), s.getString("method"),
-                        s.optString("customerId").takeUnless { it.isEmpty() || it == "null" }, s.optString("paymentAmount"))
-                    expense = ArrayList(draft.getJSONArray("expense").objects().map { ExpenseDraftLine(it.getString("id"), it.getString("name"), it.getString("amount")) })
-                    receiptAmount = draft.getString("receiptAmount"); receiptDate = draft.getString("receiptDate"); receiptMethod = draft.getString("receiptMethod"); receiptId = draft.getString("receiptId")
+                    val draft = JSONObject(raw)
+                    restoreDraft(draft)
                     route = draft.getString("route").takeIf { it in listOf("sale", "expense", "receipt") } ?: "journal"
                     if (baseVersion == 0 && state.records.any { it.id == recordId }) { selectedId = recordId; route = "detail" }
                 }.onFailure { model.error.value = "draft_unreadable" }
@@ -153,11 +189,13 @@ fun FunctionalNotebook() {
     }
     LaunchedEffect(saved) {
         saved?.let {
+            if (createSale.isNotEmpty() && JSONObject(createSale).getString("id") == it.id) createSale = ""
+            if (createExpense.isNotEmpty() && JSONObject(createExpense).getString("id") == it.id) createExpense = ""
             selectedId = it.id; dateText = it.date; route = "detail"; notice = true
             sale = SaleDraft(); expense = arrayListOf(ExpenseDraftLine(newId())); draftKind = ""; reason = ""; baseVersion = 0; recordId = newId()
             recoveredEdit = ""
             val recovery = repository.dao.meta("paymentRecovery")?.takeIf { it.isNotEmpty() }?.let(::JSONObject)
-            if (recovery != null && recovery.getString("recordId") == it.id) restorePayment(recovery) else model.draft("")
+            if (recovery != null && recovery.getString("recordId") == it.id) restorePayment(recovery) else if (createSale.isNotEmpty() || createExpense.isNotEmpty()) persist() else model.draft("")
             keyboard?.hide(); model.saved.value = null
         }
     }
@@ -180,7 +218,15 @@ fun FunctionalNotebook() {
             recordId = record.id; baseVersion = record.version; dateText = record.date; reason = ""
             if (kind == "sale") sale = SaleDraft(record.amount.toString(), record.customer, displayChannel(record.channel), false, record.note, customerId = record.customerId)
             if (kind == "expense") expense = ArrayList(record.items.map { ExpenseDraftLine(it.id, it.name, it.amount.toString()) })
-        } else if (draftKind != kind) { recordId = newId(); baseVersion = 0; reason = ""; recoveredEdit = "" }
+        } else {
+            val parked = (if (kind == "sale") createSale else createExpense).takeIf { it.isNotEmpty() }?.let(::JSONObject)
+                ?.takeUnless { draft -> state.records.any { it.id == draft.getString("id") } }
+            if (parked != null) restoreDraft(parked)
+            else {
+                recordId = newId(); baseVersion = 0; reason = ""; recoveredEdit = ""
+                sale = SaleDraft(); expense = arrayListOf(ExpenseDraftLine(newId()))
+            }
+        }
         draftKind = kind; route = kind; persist()
     }
     BackHandler(!showBackup && securityScreen.isEmpty() && (route !in listOf("journal", "recap", "customers") || (route == "customers" && selectedCustomerId.isNotEmpty())) && !saving, ::back)
@@ -215,7 +261,7 @@ fun FunctionalNotebook() {
                 Column(Modifier.statusBarsPadding()) {
                     Row(Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(horizontal = Space.medium, vertical = Space.small), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Space.small)) {
                         if (nested) IconButton(onClick = ::back, enabled = !saving, modifier = Modifier.size(48.dp)) { AppIcon(R.drawable.ic_back, description = stringResource(R.string.back)) }
-                        Text(stringResource(when (route) { "sale" -> R.string.add_sale; "expense" -> R.string.add_shopping; "receipt" -> R.string.add_receipt; "detail" -> R.string.details; "recap" -> R.string.monthly_recap; "customers" -> R.string.customers_bon; "customer_picker" -> R.string.select_customer; "customer_form" -> R.string.customer_details; else -> R.string.daily_book }), style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+                        Text(stringResource(when (route) { "sale" -> if (baseVersion > 0 || recoveredEdit.isNotEmpty()) R.string.edit_sale else R.string.add_sale; "expense" -> if (baseVersion > 0 || recoveredEdit.isNotEmpty()) R.string.edit_shopping else R.string.add_shopping; "receipt" -> R.string.add_receipt; "detail" -> R.string.details; "recap" -> R.string.monthly_recap; "customers" -> R.string.customers_bon; "customer_picker" -> R.string.select_customer; "customer_form" -> R.string.customer_details; else -> R.string.daily_book }), style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
                         LanguageMenu()
                         TextButton(onClick = { keyboard?.hide(); securityScreen = "tools" }) { Text(stringResource(R.string.backup_menu)) }
                     }
@@ -251,7 +297,7 @@ fun FunctionalNotebook() {
                             CustomerSaleControl(sale, { sale = it; persist() }, { route = "customer_picker"; persist() })
                         }, extra = {
                             if (baseVersion > 0) EntryInput(stringResource(R.string.correction_reason), reason, { reason = it; persist() })
-                            TextButton(onClick = { sale = SaleDraft(); draftKind = ""; recoveredEdit = ""; route = "journal"; model.draft("") }, enabled = !saving) { Text(stringResource(R.string.discard_draft)) }
+                            TextButton(onClick = ::discardForm, enabled = !saving) { Text(stringResource(R.string.discard_draft)) }
                         }) {
                             val data = JSONObject().put("date", dateText).put("amount", sale.amount).put("channel", channelCode(sale.channel)).put("customer", sale.customer).put("customerId", sale.customerId ?: JSONObject.NULL).put("note", sale.note)
                             if (baseVersion == 0) data.put("paid", sale.paid).apply { if (sale.paid) { put("receiptId", newId()).put("method", sale.method); if (sale.paymentAmount.isNotEmpty()) put("paymentAmount", sale.paymentAmount) } }
@@ -260,7 +306,7 @@ fun FunctionalNotebook() {
                         }
                         "expense" -> ExpenseForm(date, expense, { expense = ArrayList(it); persist() }, formError, real = true, saving = saving, onDate = { dateText = it.toString(); persist() }, extra = {
                             if (baseVersion > 0) EntryInput(stringResource(R.string.correction_reason), reason, { reason = it; persist() })
-                            TextButton(onClick = { expense = arrayListOf(ExpenseDraftLine(newId())); draftKind = ""; recoveredEdit = ""; route = "journal"; model.draft("") }, enabled = !saving) { Text(stringResource(R.string.discard_draft)) }
+                            TextButton(onClick = ::discardForm, enabled = !saving) { Text(stringResource(R.string.discard_draft)) }
                         }) {
                             val data = JSONObject().put("date", dateText).put("reason", reason).put("items", JSONArray(expense.filter { it.name.isNotBlank() || it.amount.isNotBlank() }.map {
                                 JSONObject().put("id", it.id).put("name", it.name).put("amount", it.amount)
