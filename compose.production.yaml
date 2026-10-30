@@ -1,0 +1,20 @@
+# Baso Kang Gito production overrides.
+# Run with: docker compose -f compose.yaml -f compose.production.yaml up -d --build
+services:
+  db:
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  api:
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

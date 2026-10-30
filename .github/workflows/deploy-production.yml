@@ -1,0 +1,103 @@
+
+name: Deploy Production
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: baso-kang-gito-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy to Cloudra
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Configure SSH
+        env:
+          SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          SSH_KNOWN_HOSTS: ${{ vars.VPS_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Deploy application
+        env:
+          VPS_HOST: ${{ vars.VPS_HOST }}
+          VPS_USER: ${{ vars.VPS_USER }}
+          VPS_SSH_PORT: ${{ vars.VPS_SSH_PORT }}
+          VPS_DEPLOY_PATH: ${{ vars.VPS_DEPLOY_PATH }}
+          DEPLOY_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          printf -v remote_cmd 'bash -se -- %q %q' \
+            "$VPS_DEPLOY_PATH" "$DEPLOY_SHA"
+
+          ssh \
+            -i ~/.ssh/deploy_key \
+            -o IdentitiesOnly=yes \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            -p "$VPS_SSH_PORT" \
+            "$VPS_USER@$VPS_HOST" \
+            "$remote_cmd" <<'REMOTE'
+          set -euo pipefail
+
+          cd "$1"
+          DEPLOY_SHA="$2"
+
+          echo "Checking deployment prerequisites"
+
+          test -f compose.yaml
+          test -f compose.production.yaml
+          test -f .env
+
+          if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
+            echo "Tracked files modified on VPS"
+            exit 1
+          fi
+
+          echo "Fetching production code"
+
+          git fetch origin main
+          git switch main
+          git merge --ff-only "$DEPLOY_SHA"
+
+          echo "Validating Docker Compose"
+
+          docker compose \
+            -f compose.yaml \
+            -f compose.production.yaml \
+            config --quiet
+
+          echo "Deploying containers"
+
+          docker compose \
+            -f compose.yaml \
+            -f compose.production.yaml \
+            up -d --build --wait --wait-timeout 120
+
+          echo "Production status"
+
+          docker compose \
+            -f compose.yaml \
+            -f compose.production.yaml \
+            ps
+
+          echo "Deployed commit:"
+          git rev-parse HEAD
+          REMOTE
