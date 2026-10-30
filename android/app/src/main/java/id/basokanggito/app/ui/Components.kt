@@ -1,7 +1,6 @@
 package id.basokanggito.app.ui
 
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.border
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.Alignment
@@ -17,7 +16,6 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.focus.FocusDirection
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.heading
@@ -58,7 +56,7 @@ fun EntryInput(
 ) {
     val focus = LocalFocusManager.current
     val keyboard = LocalSoftwareKeyboardController.current
-    TextField(
+    OutlinedTextField(
         value = value, onValueChange = onChange,
         label = { Text(label) }, singleLine = true,
         textStyle = if (prominent) MaterialTheme.typography.headlineLarge else MaterialTheme.typography.bodyLarge,
@@ -68,21 +66,24 @@ fun EntryInput(
         supportingText = error?.let { { Text(it) } },
         keyboardOptions = KeyboardOptions(keyboardType = if (money) KeyboardType.Number else KeyboardType.Text, imeAction = imeAction),
         keyboardActions = KeyboardActions(onNext = { if (onNext != null) onNext() else focus.moveFocus(FocusDirection.Next) }, onDone = { keyboard?.hide(); focus.clearFocus() }),
-        colors = TextFieldDefaults.colors(
+        colors = OutlinedTextFieldDefaults.colors(
             focusedContainerColor = MaterialTheme.colorScheme.surface,
             unfocusedContainerColor = MaterialTheme.colorScheme.surface,
-            focusedIndicatorColor = MaterialTheme.colorScheme.primary,
-            unfocusedIndicatorColor = if (prominent) MaterialTheme.colorScheme.outline else Color.Transparent,
+            errorContainerColor = MaterialTheme.colorScheme.surface,
+            disabledContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+            focusedBorderColor = MaterialTheme.colorScheme.primary,
+            unfocusedBorderColor = MaterialTheme.colorScheme.outline,
         ),
         shape = MaterialTheme.shapes.medium,
         modifier = modifier.fillMaxWidth().heightIn(min = if (prominent) 112.dp else 56.dp)
-            .then(if (prominent) Modifier else Modifier.border(1.dp, if (error != null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.outline, MaterialTheme.shapes.medium))
             .semantics { if (description != null) contentDescription = description },
     )
 }
 
 internal fun channelIcon(channel: String): Int = when (channel) {
     "Langsung" -> R.drawable.ic_store
+    "GoFood" -> R.drawable.ic_meal
+    "GrabFood" -> R.drawable.ic_delivery
     "ShopeeFood" -> R.drawable.ic_shopping
     else -> R.drawable.ic_delivery
 }

@@ -1,5 +1,10 @@
 package id.basokanggito.app.ui
 
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -48,14 +53,26 @@ internal fun CustomersScreen(state: NotebookState, selectedId: String, picking: 
             (it.name.contains(search.trim(), ignoreCase = true) || it.phone.contains(search.trim(), ignoreCase = true))
     }.sortedWith(compareByDescending<Customer> { customerOutstanding(it.id, state.records).signum() > 0 }.thenBy { it.name.lowercase() }.thenBy { it.id })
     val selectedCustomer = state.customers.find { it.id == selectedId }
+    val focus = LocalFocusManager.current
+    val keyboard = LocalSoftwareKeyboardController.current
+    val searchLabel = stringResource(R.string.customer_search)
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val split = maxWidth >= 840.dp && !picking
         val list: @Composable (Modifier) -> Unit = { modifier ->
             LazyColumn(modifier.testTag("customer-list"), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(Space.small)) {
                 item {
                 Column(verticalArrangement = Arrangement.spacedBy(Space.small)) {
-                EntryInput(stringResource(R.string.customer_search), search, { search = it }, imeAction = ImeAction.Done)
-                Button(onClick = onAdd, shape = MaterialTheme.shapes.large, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp)) {
+                OutlinedTextField(search, { search = it }, singleLine = true,
+                    placeholder = { Text(searchLabel) }, leadingIcon = { AppIcon(R.drawable.ic_search) },
+                    textStyle = MaterialTheme.typography.bodyLarge,
+                    shape = MaterialTheme.shapes.medium,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedContainerColor = MaterialTheme.colorScheme.surface,
+                        unfocusedContainerColor = MaterialTheme.colorScheme.surface),
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                    keyboardActions = KeyboardActions(onDone = { keyboard?.hide(); focus.clearFocus() }),
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp).semantics { contentDescription = searchLabel })
+                Button(onClick = onAdd, shape = MaterialTheme.shapes.medium, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp)) {
                     AppIcon(R.drawable.ic_add); Spacer(Modifier.width(Space.small)); Text(stringResource(R.string.add_customer))
                 }
                 if (!picking) FilterChip(selected = archived, onClick = { archived = !archived }, label = { Text(stringResource(R.string.show_archived)) },
@@ -201,7 +218,7 @@ internal fun CustomerForm(draft: JSONObject, error: String, saving: Boolean, onC
             }
             Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (error.isNotEmpty()) Text(error, color = MaterialTheme.colorScheme.error)
-                Button(onClick = { attempted = true; if (name.isNotBlank()) onSave() }, enabled = !saving, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp)) { Text(stringResource(R.string.save_record)) }
+                Button(onClick = { attempted = true; if (name.isNotBlank()) onSave() }, enabled = !saving, shape = MaterialTheme.shapes.medium, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp)) { Text(stringResource(R.string.save_record)) }
             }
         }
     }

@@ -47,6 +47,38 @@ class RunOneUiTest {
         }
     }
 
+    @Test fun focusedRefinementKeepsAmountEditingAndCustomerSearch() {
+        runBlocking {
+            app.repository.submitCustomer(newId(), 0, JSONObject().put("name", "Refinement Ayu"))
+            app.repository.submitCustomer(newId(), 0, JSONObject().put("name", "Refinement Budi"))
+            app.repository.submit("save_sale", newId(), 0, JSONObject().put("date", businessToday().toString()).put("channel", "langsung")
+                .put("amount", "75000").put("paid", true).put("receiptId", newId()).put("method", "cash"))
+        }
+        compose.setContent { BasoTheme(false) { FunctionalNotebook() } }
+        compose.waitUntil(10_000) { compose.onAllNodesWithText("Add sale").fetchSemanticsNodes().isNotEmpty() }
+        screenshot("refinement-journal")
+        compose.onNodeWithText("Add sale").performScrollTo().performClick()
+        val amount = compose.onNodeWithText("Sale amount")
+        amount.performTextInput("123456")
+        amount.performTextInputSelection(androidx.compose.ui.text.TextRange(3))
+        amount.performTextInput("9")
+        amount.assertTextContains("1239456")
+        amount.performTextClearance(); amount.performTextInput("125000")
+        compose.activityRule.scenario.onActivity {
+            androidx.core.view.WindowCompat.getInsetsController(it.window, it.window.decorView).hide(WindowInsetsCompat.Type.ime())
+        }
+        compose.waitForIdle(); screenshot("refinement-sale")
+        compose.onNodeWithText("GoFood").performScrollTo().performClick()
+        compose.onNodeWithText("GoFood").assertIsSelected()
+        compose.onNodeWithContentDescription("Back").performClick()
+        compose.onNodeWithText("Customers & Bon").performClick()
+        val search = compose.onNodeWithContentDescription(app.getString(R.string.customer_search))
+        search.performTextInput("Ayu"); search.performImeAction()
+        compose.onNodeWithText("Refinement Ayu").assertExists()
+        compose.onNodeWithText("Refinement Budi").assertDoesNotExist()
+        screenshot("refinement-search")
+    }
+
     @Test fun keypadMasksInputBackspacesSubmitsOnceAndHonorsBusyDelayAndCover() {
         var busy by mutableStateOf(false)
         var seconds by mutableStateOf(0L)

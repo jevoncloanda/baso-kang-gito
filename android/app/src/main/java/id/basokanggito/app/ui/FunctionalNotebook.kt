@@ -259,7 +259,7 @@ fun FunctionalNotebook() {
             }
             Scaffold(Modifier.weight(1f), containerColor = MaterialTheme.colorScheme.background, topBar = {
                 Column(Modifier.statusBarsPadding()) {
-                    Row(Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(horizontal = Space.medium, vertical = Space.small), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Space.small)) {
+                    Row(Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(horizontal = Space.medium, vertical = Space.tiny), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Space.small)) {
                         if (nested) IconButton(onClick = ::back, enabled = !saving, modifier = Modifier.size(48.dp)) { AppIcon(R.drawable.ic_back, description = stringResource(R.string.back)) }
                         Text(stringResource(when (route) { "sale" -> if (baseVersion > 0 || recoveredEdit.isNotEmpty()) R.string.edit_sale else R.string.add_sale; "expense" -> if (baseVersion > 0 || recoveredEdit.isNotEmpty()) R.string.edit_shopping else R.string.add_shopping; "receipt" -> R.string.add_receipt; "detail" -> R.string.details; "recap" -> R.string.monthly_recap; "customers" -> R.string.customers_bon; "customer_picker" -> R.string.select_customer; "customer_form" -> R.string.customer_details; else -> R.string.daily_book }), style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
                         LanguageMenu()

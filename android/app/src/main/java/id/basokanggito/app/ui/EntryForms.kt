@@ -158,7 +158,7 @@ internal fun FormFrame(total: Long?, error: String, real: Boolean = false, savin
                 Column(Modifier.fillMaxWidth().padding(horizontal = Space.large, vertical = Space.medium), verticalArrangement = Arrangement.spacedBy(Space.small)) {
                     if (error.isNotEmpty()) Text(error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
                     MoneyRow(stringResource(totalLabel ?: if (real) R.string.total_record else R.string.total_sample), total ?: 0)
-                    Button(onClick = onSave, enabled = !saving, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp), shape = MaterialTheme.shapes.large) { Text(stringResource(saveLabel ?: if (real) R.string.save_record else R.string.save_sample)) }
+                    Button(onClick = onSave, enabled = !saving, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp), shape = MaterialTheme.shapes.medium) { Text(stringResource(saveLabel ?: if (real) R.string.save_record else R.string.save_sample)) }
                 }
             }
         }

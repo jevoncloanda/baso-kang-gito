@@ -33,11 +33,11 @@ import id.basokanggito.app.data.totals
 internal fun Journal(entries: List<JournalEntry>, date: LocalDate, onDate: (LocalDate) -> Unit, onSale: () -> Unit, onExpense: () -> Unit, onEntry: (JournalEntry) -> Unit, realTotals: BookTotals? = null) {
     BoxWithConstraints(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
         val split = maxWidth >= 840.dp
-        Column(Modifier.widthIn(max = 1200.dp).fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(20.dp)) {
+        Column(Modifier.widthIn(max = 1200.dp).fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = Space.medium, vertical = Space.small), verticalArrangement = Arrangement.spacedBy(Space.small)) {
             if (realTotals == null) DateSelector(date, onDate) else BusinessDateControl(date, onDate)
             if (split) {
                 Row(Modifier.fillMaxWidth().testTag("journal-expanded"), horizontalArrangement = Arrangement.spacedBy(Space.section), verticalAlignment = Alignment.Top) {
-                    Column(Modifier.width(320.dp), verticalArrangement = Arrangement.spacedBy(Space.large)) {
+                    Column(Modifier.width(320.dp), verticalArrangement = Arrangement.spacedBy(Space.medium)) {
                         Summary(entries, realTotals)
                         EntryActions(onSale, onExpense)
                         if (realTotals != null) ChannelSummary(entries)
@@ -45,7 +45,7 @@ internal fun Journal(entries: List<JournalEntry>, date: LocalDate, onDate: (Loca
                     History(entries, Modifier.weight(1f), onEntry, real = realTotals != null)
                 }
             } else {
-                Column(Modifier.testTag("journal-compact"), verticalArrangement = Arrangement.spacedBy(Space.large)) {
+                Column(Modifier.testTag("journal-compact"), verticalArrangement = Arrangement.spacedBy(Space.medium)) {
                     Summary(entries, realTotals)
                     EntryActions(onSale, onExpense)
                     if (realTotals != null) ChannelSummary(entries)
@@ -71,13 +71,15 @@ internal fun DateSelector(date: LocalDate, onDate: (LocalDate) -> Unit, onPick: 
 @Composable
 internal fun Summary(entries: List<JournalEntry>, realTotals: BookTotals? = null) {
     Surface(shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.surface) {
-        Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Space.small)) {
-                Text(stringResource(R.string.net_sales), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f))
-                IconBadge(R.drawable.ic_chart, accent = true)
+        Column(Modifier.fillMaxWidth().padding(Space.medium), verticalArrangement = Arrangement.spacedBy(Space.small)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Space.medium)) {
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(Space.tiny)) {
+                    Text(stringResource(R.string.net_sales), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    AmountText(realTotals?.sales ?: entries.filter { !it.isExpense && !it.isReceipt && !it.voided }.sumOf { it.amount }, style = MaterialTheme.typography.headlineLarge,
+                        modifier = Modifier.testTag("sales-total"))
+                }
+                if (LocalDensity.current.fontScale <= 1.3f) IconBadge(R.drawable.ic_chart, accent = true)
             }
-            AmountText(realTotals?.sales ?: entries.filter { !it.isExpense && !it.isReceipt && !it.voided }.sumOf { it.amount }, style = MaterialTheme.typography.headlineLarge,
-                modifier = Modifier.testTag("sales-total"))
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             if (LocalDensity.current.fontScale > 1.3f) {
                 MoneyRow(stringResource(R.string.received), realTotals?.received ?: entries.sumOf { it.received })
