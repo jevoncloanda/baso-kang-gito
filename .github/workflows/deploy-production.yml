@@ -2,6 +2,14 @@
 name: Deploy Production
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - "backend/**"
+      - "compose.yaml"
+      - "compose.production.yaml"
+      - ".github/workflows/deploy-production.yml"
   workflow_dispatch:
 
 permissions:
