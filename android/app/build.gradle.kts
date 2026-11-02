@@ -27,6 +27,16 @@ android {
     }
 
     buildFeatures { compose = true; buildConfig = true }
+
+    signingConfigs {
+        create("production") {
+            storeFile = file(localConfig.getProperty("bookkeeping.signingStoreFile"))
+            storePassword = localConfig.getProperty("bookkeeping.signingStorePassword")
+            keyAlias = localConfig.getProperty("bookkeeping.signingKeyAlias")
+            keyPassword = localConfig.getProperty("bookkeeping.signingKeyPassword")
+        }
+    }
+
     buildTypes {
         getByName("debug") {
             buildConfigField("String", "SYNC_URL", "\"http://127.0.0.1:3000\"")
@@ -34,6 +44,7 @@ android {
             buildConfigField("String", "SYNC_TOKEN", "\"\"")
         }
         getByName("release") {
+            signingConfig = signingConfigs.getByName("production")
             val apiUrl = localConfig.getProperty("bookkeeping.apiUrl", "")
             val endpoint = runCatching { URI(apiUrl) }.getOrNull()
             require(apiUrl.isEmpty() || (endpoint?.scheme == "https" && !endpoint.host.isNullOrBlank() &&
