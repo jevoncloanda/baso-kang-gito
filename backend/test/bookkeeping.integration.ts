@@ -140,6 +140,85 @@ test('financial operations, two independent clients, retries, conflicts and exac
     assert.equal(correctedExpense.statusCode,200,correctedExpense.body);
     assert.equal(correctedExpense.json().record.createdAt,rootTime);
   });
+  await t.test('date-only corrections move sales and receipts independently across month boundaries',async()=>{
+    const root=sale(true); root.data.date='2028-01-31';
+    const createdResponse=await post(root); assert.equal(createdResponse.statusCode,200,createdResponse.body);
+    const created=createdResponse.json().record;
+    const correction={id:randomUUID(),action:'correct_date',recordId:root.recordId,expectedVersion:1,
+      data:{date:'2028-02-01',reason:'Sale belongs to February'}};
+    const correctedResponse=await post(correction,clientB); assert.equal(correctedResponse.statusCode,200,correctedResponse.body);
+    const corrected=correctedResponse.json().record;
+    assert.deepEqual(corrected,{...created,date:'2028-02-01',version:2});
+    assert.deepEqual((await post(correction)).json(),correctedResponse.json());
+    assert.equal((await get('/v1/monthly?month=2028-01')).json().totals.sales,'0');
+    assert.equal((await get('/v1/monthly?month=2028-01')).json().totals.received,'100000');
+    assert.equal((await get('/v1/monthly?month=2028-02')).json().totals.sales,'100000');
+    assert.equal((await get('/v1/monthly?month=2028-02')).json().totals.received,'0');
+    const paymentCorrection={id:randomUUID(),action:'correct_date',recordId:root.recordId,expectedVersion:2,
+      data:{date:'2028-02-02',receiptId:created.receipts[0].id,reason:'Payment received a day later'}};
+    const paymentResponse=await post(paymentCorrection); assert.equal(paymentResponse.statusCode,200,paymentResponse.body);
+    const paymentRecord=paymentResponse.json().record;
+    assert.deepEqual(paymentRecord,{...corrected,version:3,receipts:[{...created.receipts[0],date:'2028-02-02'}]});
+    assert.deepEqual((await post(paymentCorrection,clientB)).json(),paymentResponse.json());
+    assert.equal((await get('/v1/daily?date=2028-01-31')).json().totals.received,'0');
+    assert.equal((await get('/v1/daily?date=2028-02-01')).json().totals.received,'0');
+    assert.equal((await get('/v1/daily?date=2028-02-02')).json().totals.received,'100000');
+    assert.equal((await get('/v1/monthly?month=2028-02')).json().totals.received,'100000');
+    const revisions=(await sql<{reason:string;before_record:any;after_record:any}>`SELECT reason,before_record,after_record
+      FROM financial_revisions WHERE record_id=${root.recordId}::uuid ORDER BY sequence`.execute(db)).rows;
+    assert.equal(revisions.length,3);
+    assert.equal(revisions[1]!.reason,correction.data.reason);
+    assert.deepEqual(revisions[1]!.before_record,created); assert.deepEqual(revisions[1]!.after_record,corrected);
+    assert.deepEqual(revisions[2]!.before_record,corrected); assert.deepEqual(revisions[2]!.after_record,paymentRecord);
+    const stale=await post({...correction,id:randomUUID()});
+    assert.equal(stale.statusCode,409); assert.deepEqual(stale.json().current,paymentRecord);
+    const changes=(await get(`/v1/changes?after=${createdResponse.json().cursor}&limit=100`,clientB)).json().changes;
+    assert.deepEqual(changes.filter((change:any)=>change.record.id===root.recordId).map((change:any)=>change.record),[corrected,paymentRecord]);
+  });
+  await t.test('shopping date corrections preserve every line and reject unrelated or invalid changes atomically',async()=>{
+    const root={id:randomUUID(),action:'save_expense',recordId:randomUUID(),expectedVersion:0,
+      data:{date:'2028-03-31',note:'Keep this historical description',items:[
+        {id:randomUUID(),name:'Daging date fixture',amount:'150000'},{id:randomUUID(),name:'Bumbu date fixture',amount:'25000'}]}};
+    const createdResponse=await post(root); assert.equal(createdResponse.statusCode,200,createdResponse.body);
+    const created=createdResponse.json().record;
+    for (const data of [
+      {date:'2028-04-01'}, {date:'2028-04-01',reason:''},
+      ...['1999-12-31','2100-01-01','2028-02-30'].map(date=>({date,reason:'Invalid date'})),
+      {date:'2028-04-01',reason:'Must only change date',amount:'1'},
+      {date:'2028-04-01',reason:'No receipt on shopping',receiptId:randomUUID()},
+    ]) {
+      const response=await post({id:randomUUID(),action:'correct_date',recordId:root.recordId,expectedVersion:1,data});
+      assert.equal(response.statusCode,400,response.body);
+      assert.deepEqual((await get(`/v1/records/${root.recordId}`)).json(),created);
+    }
+    const correction={id:randomUUID(),action:'correct_date',recordId:root.recordId,expectedVersion:1,
+      data:{date:'2028-04-01',reason:'Shopping belongs to April'}};
+    const corrected=await post(correction); assert.equal(corrected.statusCode,200,corrected.body);
+    assert.deepEqual(corrected.json().record,{...created,date:'2028-04-01',version:2});
+    assert.equal((await get('/v1/monthly?month=2028-03')).json().totals.expenses,'0');
+    assert.equal((await get('/v1/monthly?month=2028-04')).json().totals.expenses,'175000');
+    assert.equal((await get('/v1/daily?date=2028-03-31')).json().totals.expenses,'0');
+    assert.equal((await get('/v1/daily?date=2028-04-01')).json().totals.expenses,'175000');
+    assert.deepEqual((await post(correction)).json(),corrected.json());
+    assert.equal((await sql<{n:string}>`SELECT count(*)::text AS n FROM financial_revisions WHERE record_id=${root.recordId}::uuid`.execute(db)).rows[0]!.n,'2');
+  });
+  await t.test('concurrent date edits require review and platform dates cannot overlap an existing aggregate',async()=>{
+    const root=sale(false); root.data.date='2028-05-31';
+    assert.equal((await post(root)).statusCode,200);
+    const responses=await Promise.all([clientA,clientB].map((client,index)=>post({id:randomUUID(),action:'correct_date',
+      recordId:root.recordId,expectedVersion:1,data:{date:`2028-06-0${index+1}`,reason:`Corrected by client ${index}`}},client)));
+    assert.deepEqual(responses.map(response=>response.statusCode).sort(),[200,409]);
+    const winner=responses.find(response=>response.statusCode===200)!.json().record;
+    assert.deepEqual(responses.find(response=>response.statusCode===409)!.json().current,winner);
+    const first=sale(false,'gofood'); first.data.date='2028-07-30';
+    const second=sale(false,'gofood'); second.data.date='2028-07-31';
+    assert.equal((await post(first)).statusCode,200); assert.equal((await post(second)).statusCode,200);
+    const overlap=await post({id:randomUUID(),action:'correct_date',recordId:second.recordId,expectedVersion:1,
+      data:{date:'2028-07-30',reason:'Would duplicate a platform total'}});
+    assert.equal(overlap.statusCode,409); assert.equal(overlap.json().error,'daily_aggregate_exists');
+    assert.equal(overlap.json().current.id,first.recordId);
+    assert.equal((await get(`/v1/records/${second.recordId}`)).json().date,'2028-07-31');
+  });
   await t.test('legacy pull timestamps preserve historical snapshots and immutable operation replay',async()=>{
     const op=sale(true);
     const response=await post(op); assert.equal(response.statusCode,200,response.body);

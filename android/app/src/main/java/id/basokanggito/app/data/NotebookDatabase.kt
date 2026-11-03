@@ -10,6 +10,8 @@ import kotlinx.coroutines.flow.Flow
 data class StoredRecord(@PrimaryKey val id: String, val date: String, val payload: String, val serverPayload: String? = null)
 @Entity(tableName = "customers")
 data class StoredCustomer(@PrimaryKey val id: String, val payload: String, val serverPayload: String? = null)
+@Entity(tableName = "shopping_catalog")
+data class StoredCatalogItem(@PrimaryKey val id: String, val payload: String, val serverPayload: String? = null)
 @Entity(tableName = "pending_operations", indices = [Index("recordId"), Index(value = ["operationId"], unique = true)])
 data class PendingOperation(
     @PrimaryKey(autoGenerate = true) val sequence: Long = 0, val operationId: String, val recordId: String,
@@ -20,6 +22,11 @@ data class NotebookMeta(@PrimaryKey val key: String, val value: String)
 
 @Dao
 interface NotebookDao {
+    @Query("SELECT * FROM shopping_catalog ORDER BY id") fun observeCatalog(): Flow<List<StoredCatalogItem>>
+    @Query("SELECT * FROM shopping_catalog ORDER BY id") suspend fun catalog(): List<StoredCatalogItem>
+    @Query("SELECT * FROM shopping_catalog WHERE id=:id") suspend fun catalogItem(id: String): StoredCatalogItem?
+    @Upsert suspend fun putCatalogItem(item: StoredCatalogItem)
+    @Query("DELETE FROM shopping_catalog WHERE id=:id") suspend fun removeCatalogItem(id: String)
     @Query("SELECT * FROM customers ORDER BY id") fun observeCustomers(): Flow<List<StoredCustomer>>
     @Query("SELECT * FROM customers ORDER BY id") suspend fun customers(): List<StoredCustomer>
     @Query("SELECT * FROM customers WHERE id=:id") suspend fun customer(id: String): StoredCustomer?
@@ -49,5 +56,11 @@ val CustomerMigration = object : Migration(1, 2) {
     }
 }
 
-@Database(entities = [StoredRecord::class, StoredCustomer::class, PendingOperation::class, NotebookMeta::class], version = 2, exportSchema = true)
+val ShoppingCatalogMigration = object : Migration(2, 3) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS `shopping_catalog` (`id` TEXT NOT NULL, `payload` TEXT NOT NULL, `serverPayload` TEXT, PRIMARY KEY(`id`))")
+    }
+}
+
+@Database(entities = [StoredRecord::class, StoredCustomer::class, StoredCatalogItem::class, PendingOperation::class, NotebookMeta::class], version = 3, exportSchema = true)
 abstract class NotebookDatabase : RoomDatabase() { abstract fun notebook(): NotebookDao }

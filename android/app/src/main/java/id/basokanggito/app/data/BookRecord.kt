@@ -19,8 +19,8 @@ val ChannelCodes = listOf("langsung", "gofood", "grabfood", "shopeefood")
 data class Payment(val id: String, val date: String, val amount: Long, val method: String, val voided: Boolean = false, val createdAt: String = Instant.EPOCH.toString()) {
     fun json() = JSONObject().put("id", id).put("date", date).put("amount", amount.toString()).put("method", method).put("voided", voided).put("createdAt", createdAt)
 }
-data class ShoppingItem(val id: String, val name: String, val amount: Long) {
-    fun json() = JSONObject().put("id", id).put("name", name).put("amount", amount.toString())
+data class ShoppingItem(val id: String, val name: String, val amount: Long, val masterId: String? = null) {
+    fun json() = JSONObject().put("id", id).put("name", name).put("amount", amount.toString()).apply { masterId?.let { put("masterId", it) } }
 }
 data class BookRecord(
     val id: String, val kind: String, val date: String, val version: Int, val amount: Long,
@@ -55,7 +55,8 @@ data class BookRecord(
                 Payment(validId(it.getString("id")), validDate(it.getString("date")), amount(it.getString("amount")),
                     it.getString("method").also { method -> require(method in listOf("cash", "transfer")) }, it.getBoolean("voided"), timestamp(it))
             }
-            val items = json.optJSONArray("items").objects().map { ShoppingItem(validId(it.getString("id")), it.getString("name"), amount(it.getString("amount"))) }
+            val items = json.optJSONArray("items").objects().map { ShoppingItem(validId(it.getString("id")), it.getString("name"), amount(it.getString("amount")),
+                if (it.has("masterId")) validId(it.getString("masterId")) else null) }
             val total = json.getString("amount").toLong().also { require(it > 0) }
             if (kind == "expense") require(items.isNotEmpty() && items.fold(0L) { sum, item -> Math.addExact(sum, item.amount) } == total)
             else { amount(json.getString("amount")); require(json.getString("channel") in ChannelCodes) }
@@ -87,6 +88,17 @@ fun applyLocally(op: JSONObject, before: BookRecord?): BookRecord {
     fun payment() = Payment(validId(data.getString("id")), validDate(data.getString("date")), amount(data.getString("amount")),
         data.getString("method").also { require(it in listOf("cash", "transfer")) }, createdAt = now)
     return when (op.getString("action")) {
+        "correct_date" -> {
+            require(before != null && version > 0 && !before.voided)
+            require(data.optString("reason").isNotBlank())
+            require(data.keys().asSequence().all { it in setOf("date", "reason", "receiptId") })
+            val date = validDate(data.getString("date"))
+            if (data.has("receiptId")) {
+                val receiptId = validId(data.getString("receiptId"))
+                require(before.kind == "sale" && before.receipts.any { it.id == receiptId && !it.voided })
+                before.copy(version = version + 1, receipts = before.receipts.map { if (it.id == receiptId) it.copy(date = date) else it })
+            } else before.copy(date = date, version = version + 1)
+        }
         "save_sale" -> {
             require(before == null || before.kind == "sale")
             val channel = data.getString("channel").also { require(it in ChannelCodes) }
@@ -105,7 +117,9 @@ fun applyLocally(op: JSONObject, before: BookRecord?): BookRecord {
         "save_expense" -> {
             require(before == null || before.kind == "expense")
             val items = data.getJSONArray("items").objects().map { ShoppingItem(validId(it.getString("id")),
-                it.getString("name").trim().also { name -> require(name.length in 1..200) }, amount(it.getString("amount"))) }
+                it.getString("name").trim().also { name -> require(name.length in 1..200) }, amount(it.getString("amount")),
+                if (it.has("masterId")) validId(it.getString("masterId")) else null) }
+            if (data.has("catalogVersion")) require(data.getInt("catalogVersion") == 1 && items.all { it.masterId != null })
             require(items.size in 1..100 && items.map { it.id }.distinct().size == items.size)
             BookRecord(id, "expense", validDate(data.getString("date")), version + 1,
                 items.fold(0L) { sum, item -> Math.addExact(sum, item.amount) }, note = data.optString("note"), items = items, createdAt = before?.createdAt ?: now)

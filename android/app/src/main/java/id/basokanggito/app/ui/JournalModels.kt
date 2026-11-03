@@ -31,7 +31,7 @@ data class SaleDraft(
     val customerId: String? = null, val paymentAmount: String = "",
 ) : Serializable
 
-data class ExpenseDraftLine(val id: String, val name: String = "", val amount: String = "") : Serializable
+data class ExpenseDraftLine(val id: String, val name: String = "", val amount: String = "", val masterId: String? = null) : Serializable
 
 val Indonesian: Locale = Locale.forLanguageTag("id-ID")
 val SalesChannels = listOf("Langsung", "GoFood", "GrabFood", "ShopeeFood")

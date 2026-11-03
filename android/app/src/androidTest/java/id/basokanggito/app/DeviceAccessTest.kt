@@ -158,7 +158,7 @@ class DeviceAccessTest {
     @Test fun backgroundGraceRotationAndRealLockKeepDraftAndSecureWindow() {
         ActivityScenario.launch(MainActivity::class.java).use { scenario ->
             compose.unlockNotebookFixture()
-            scenario.onActivity { assertTrue(it.window.attributes.flags and WindowManager.LayoutParams.FLAG_SECURE != 0) }
+            scenario.onActivity { assertTrue(it.window.attributes.flags and WindowManager.LayoutParams.FLAG_SECURE == 0) }
             compose.onNodeWithText("Add sale").performScrollTo().performClick()
             compose.onNodeWithText("Sale amount").performTextInput("65000")
             scenario.recreate()

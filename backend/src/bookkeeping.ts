@@ -1,19 +1,20 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { sql, type Kysely, type Transaction } from 'kysely';
 import type { Database } from './database.js';
+import { catalogItem, resolveShoppingName, type CatalogItem } from './shopping-catalog.js';
 
 type Db = Kysely<Database> | Transaction<Database>;
 export type Receipt = { id: string; date: string; amount: string; method: 'cash'|'transfer'; voided: boolean; createdAt?: string };
 export type RecordData = {
   id: string; kind: 'sale'|'expense'; date: string; version: number; amount: string; note: string; voided: boolean;
   channel?: string; origin?: string; entryKind?: string; customer?: string; customerId?: string | null; createdAt?: string;
-  receipts?: Receipt[]; items?: { id: string; name: string; amount: string }[];
+  receipts?: Receipt[]; items?: { id: string; name: string; amount: string; masterId?:string }[];
 };
 export type CustomerData = {
   id: string; kind: 'customer'; name: string; phone: string; address: string; notes: string;
   archived: boolean; version: number; createdAt: string;
 };
-export type Snapshot = RecordData | CustomerData;
+export type Snapshot = RecordData | CustomerData | CatalogItem;
 export class FinancialError extends Error {
   constructor(public status: number, public code: string, public current?: Snapshot) { super(code); }
 }
@@ -68,7 +69,7 @@ export async function record(db: Db, id: string): Promise<RecordData | undefined
     (voided_at IS NOT NULL) AS voided, (SELECT COALESCE(sum(amount_rupiah),0)::text FROM expense_items WHERE expense_entry_id=e.id) AS amount,
     to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS "createdAt"
     FROM expense_entries e WHERE id=${id}::uuid`.execute(db)).rows[0];
-  if (expense) expense.items = (await sql<{id:string;name:string;amount:string}>`SELECT id,name,amount_rupiah::text AS amount
+  if (expense) expense.items = (await sql<{id:string;name:string;amount:string;masterId:string}>`SELECT id,name,amount_rupiah::text AS amount,master_id AS "masterId"
     FROM expense_items WHERE expense_entry_id=${id}::uuid ORDER BY position`.execute(db)).rows;
   return expense;
 }
@@ -117,11 +118,41 @@ export async function applyOperation(db: Kysely<Database>, input: unknown) {
       if (duplicate.payload_hash!==hash) throw new FinancialError(409,'operation_reused');
       return duplicate.result;
     }
-    const before: Snapshot | undefined=await record(tx,recordId) ?? await customer(tx,recordId);
-    if ((before?.version ?? 0)!==version) throw new FinancialError(409,'version_conflict',before);
-    if (before && before.kind!=='customer' && before.voided) throw new FinancialError(409,'record_voided',before);
+    const before: Snapshot | undefined=await record(tx,recordId) ?? await customer(tx,recordId) ?? await catalogItem(tx,recordId);
+    // Identical offline catalog creates converge on the deterministic ID, without rebasing edits.
+    const sameCatalogCreate=op.action==='save_shopping_item' && version===0 && before?.kind==='shopping_item' &&
+      before.name===text(data.name,200,true) && before.unit===text(data.unit,50) && !before.archived && data.archived!==true;
+    if ((before?.version ?? 0)!==version && !sameCatalogCreate) throw new FinancialError(409,'version_conflict',before);
+    if (before && before.kind!=='customer' && before.kind!=='shopping_item' && before.voided) throw new FinancialError(409,'record_voided',before);
     const reason=version>0 ? text(data.reason,500,true) : 'Created';
-    if (op.action==='save_customer') {
+    if (op.action==='save_shopping_item') {
+      if (before && before.kind!=='shopping_item') throw invalid();
+      const name=text(data.name,200,true); const unit=text(data.unit,50);
+      if (data.archived!==undefined && typeof data.archived!=='boolean') throw invalid();
+      const alias=(await sql<{id:string}>`SELECT master_id AS id FROM shopping_item_names WHERE name=${name}`.execute(tx)).rows[0];
+      if (alias && alias.id!==recordId) throw new FinancialError(409,'catalog_name_exists',await catalogItem(tx,alias.id));
+      if (!before) {
+        const stable=(await sql<{id:string}>`SELECT shopping_item_id(${name}) AS id`.execute(tx)).rows[0]!.id;
+        if (stable!==recordId) throw invalid();
+        await sql`INSERT INTO shopping_catalog(id,name,unit,archived) VALUES(${recordId}::uuid,${name},${unit},${data.archived??false})`.execute(tx);
+      } else if (!sameCatalogCreate) await sql`UPDATE shopping_catalog SET name=${name},unit=${unit},archived=${data.archived??before.archived},version=version+1,updated_at=now() WHERE id=${recordId}::uuid`.execute(tx);
+      await sql`INSERT INTO shopping_item_names(name,master_id) VALUES(${name},${recordId}::uuid) ON CONFLICT(name) DO NOTHING`.execute(tx);
+    } else if (before?.kind==='shopping_item') throw invalid();
+    else if (op.action==='correct_date') {
+      if (!before || before.kind==='customer' || Object.keys(data).some(key=>!['date','reason','receiptId'].includes(key))) throw invalid();
+      const date=businessDate(data.date);
+      if (data.receiptId!==undefined) {
+        const receiptId=uuid(data.receiptId);
+        if (before.kind!=='sale' || !before.receipts!.some(receipt=>receipt.id===receiptId&&!receipt.voided)) throw invalid();
+        await sql`UPDATE receipts SET received_date=${date}::date,version=version+1,updated_at=now() WHERE id=${receiptId}::uuid`.execute(tx);
+        await sql`UPDATE sales SET version=version+1,updated_at=now() WHERE id=${recordId}::uuid`.execute(tx);
+      } else if (before.kind==='sale') {
+        const overlap=(await sql<{id:string}>`SELECT id FROM sales WHERE business_date=${date}::date AND channel=${before.channel}
+          AND id<>${recordId}::uuid AND voided_at IS NULL AND (${before.entryKind}='daily_aggregate' OR entry_kind='daily_aggregate') LIMIT 1`.execute(tx)).rows[0];
+        if (overlap) throw new FinancialError(409,'daily_aggregate_exists',await record(tx,overlap.id));
+        await sql`UPDATE sales SET business_date=${date}::date,version=version+1,updated_at=now() WHERE id=${recordId}::uuid`.execute(tx);
+      } else await sql`UPDATE expense_entries SET business_date=${date}::date,version=version+1,updated_at=now() WHERE id=${recordId}::uuid`.execute(tx);
+    } else if (op.action==='save_customer') {
       if (before && before.kind!=='customer') throw invalid();
       const name=text(data.name,200,true); const phone=text(data.phone,50); const address=text(data.address,500); const notes=text(data.notes,1000);
       if (data.archived!==undefined && typeof data.archived!=='boolean') throw invalid();
@@ -173,14 +204,26 @@ export async function applyOperation(db: Kysely<Database>, input: unknown) {
       if (before && before.kind!=='expense') throw invalid();
       const date=businessDate(data.date); const note=text(data.note,1000);
       if (!Array.isArray(data.items) || data.items.length<1 || data.items.length>100) throw invalid();
-      const items=data.items.map(value=>{ const item=object(value); return {id:uuid(item.id),name:text(item.name,200,true),amount:money(item.amount)}; });
+      if (data.catalogVersion!==undefined && data.catalogVersion!==1) throw invalid();
+      const items=data.items.map(value=>{ const item=object(value); return {id:uuid(item.id),name:text(item.name,200,true),amount:money(item.amount),
+        masterId:item.masterId===undefined?undefined:uuid(item.masterId)}; });
       if (new Set(items.map(i=>i.id)).size!==items.length) throw invalid();
+      const linkedItems=[];
+      for (const item of items) {
+        if (data.catalogVersion===1 && !item.masterId) throw invalid();
+        // An unchanged legacy line retains its identity even after a master rename/archive.
+        const previous=before?.items?.find(line=>line.id===item.id && line.name===item.name);
+        const masterId=item.masterId??previous?.masterId??await resolveShoppingName(tx,item.name);
+        const master=await catalogItem(tx,masterId);
+        if (!master || (master.archived && previous?.masterId!==masterId)) throw new FinancialError(422,'catalog_item_unavailable');
+        linkedItems.push({...item,masterId});
+      }
       if (before) {
         await sql`UPDATE expense_entries SET business_date=${date}::date,note=${note},version=version+1,updated_at=now() WHERE id=${recordId}::uuid`.execute(tx);
         await sql`DELETE FROM expense_items WHERE expense_entry_id=${recordId}::uuid`.execute(tx);
       } else await sql`INSERT INTO expense_entries(id,business_date,note,version) VALUES(${recordId}::uuid,${date}::date,${note},1)`.execute(tx);
-      for (const [position,item] of items.entries()) await sql`INSERT INTO expense_items(id,expense_entry_id,name,amount_rupiah,position)
-        VALUES(${item.id}::uuid,${recordId}::uuid,${item.name},${item.amount}::bigint,${position})`.execute(tx);
+      for (const [position,item] of linkedItems.entries()) await sql`INSERT INTO expense_items(id,expense_entry_id,name,amount_rupiah,position,master_id)
+        VALUES(${item.id}::uuid,${recordId}::uuid,${item.name},${item.amount}::bigint,${position},${item.masterId}::uuid)`.execute(tx);
     } else if (op.action==='add_receipt') {
       if (!before || before.kind!=='sale') throw invalid();
       const amount=money(data.amount); const received=before.receipts!.filter(r=>!r.voided).reduce((sum,r)=>sum+BigInt(r.amount),0n);
@@ -201,7 +244,7 @@ export async function applyOperation(db: Kysely<Database>, input: unknown) {
         await sql`UPDATE sales SET voided_at=now(),void_reason=${reason},version=version+1,updated_at=now() WHERE id=${recordId}::uuid`.execute(tx);
       } else await sql`UPDATE expense_entries SET voided_at=now(),void_reason=${reason},version=version+1,updated_at=now() WHERE id=${recordId}::uuid`.execute(tx);
     } else throw invalid();
-    const after=(await record(tx,recordId) ?? await customer(tx,recordId))!; const cursor=(BigInt(state.cursor)+1n).toString(); const result={record:after,cursor};
+    const after=(await record(tx,recordId) ?? await customer(tx,recordId) ?? await catalogItem(tx,recordId))!; const cursor=(BigInt(state.cursor)+1n).toString(); const result={record:after,cursor};
     await sql`INSERT INTO financial_operations(id,payload_hash,result) VALUES(${id}::uuid,${hash},${JSON.stringify(result)}::jsonb)`.execute(tx);
     await sql`INSERT INTO financial_revisions(operation_id,record_id,reason,before_record,after_record)
       VALUES(${id}::uuid,${recordId}::uuid,${reason},${before?JSON.stringify(before):null}::jsonb,${JSON.stringify(after)}::jsonb)`.execute(tx);
@@ -222,7 +265,18 @@ async function addReceipt(db: Db,saleId:string,channel:string,data:{[key:string]
 
 export async function changes(db:Db, after:string,limit:number) {
   if (!/^(0|[1-9][0-9]{0,17})$/.test(after) || !Number.isInteger(limit) || limit<1 || limit>100) throw invalid();
-  const rows=(await sql<{cursor:string;record:Snapshot}>`SELECT cursor::text,record FROM sync_changes WHERE cursor>${after}::bigint ORDER BY sync_changes.cursor LIMIT ${limit}`.execute(db)).rows;
+  // Installed APKs only understand financial/customer snapshots. Catalog has its own versioned pull.
+  const rows=(await sql<{cursor:string;record:RecordData|CustomerData}>`SELECT cursor::text,record FROM sync_changes WHERE cursor>${after}::bigint
+    AND record->>'kind'<>'shopping_item' ORDER BY sync_changes.cursor LIMIT ${limit}`.execute(db)).rows;
+  // Add references to legacy transport snapshots without rewriting audit/replay facts or descriptions.
+  const names=[...new Set(rows.flatMap(({record})=>record.kind==='expense'?(record.items??[]).filter(item=>!item.masterId).map(item=>item.name):[]))];
+  if (names.length) {
+    const aliases=(await sql<{name:string;id:string}>`SELECT name,master_id AS id FROM shopping_item_names WHERE name=ANY(${names}::text[])`.execute(db)).rows;
+    const masterIds=new Map(aliases.map(alias=>[alias.name,alias.id]));
+    for (const {record} of rows) if (record.kind==='expense') for (const item of record.items??[]) {
+      const masterId=masterIds.get(item.name); if (!item.masterId && masterId) item.masterId=masterId;
+    }
+  }
   // Enrich legacy snapshots for display only. Never rewrite financial snapshots or stored replay results.
   const missingIds=[...new Set(rows.flatMap(({record})=>record.kind==='customer'?[]:[
     ...(record.createdAt?[]:[record.id]), ...(record.receipts??[]).filter(receipt=>!receipt.createdAt).map(receipt=>receipt.id),

@@ -3,6 +3,8 @@ package id.basokanggito.app.data
 import androidx.room.withTransaction
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -13,7 +15,7 @@ import kotlinx.coroutines.CancellationException
 
 private class NotebookAccessDenied(code: String) : IOException(code)
 
-data class NotebookState(val records: List<BookRecord> = emptyList(), val pending: List<PendingOperation> = emptyList(), val meta: Map<String, String> = emptyMap(), val loaded: Boolean = false, val unreadable: Boolean = false, val serverRecords: Map<String, BookRecord> = emptyMap(), val customers: List<Customer> = emptyList(), val serverCustomers: Map<String, Customer> = emptyMap())
+data class NotebookState(val records: List<BookRecord> = emptyList(), val pending: List<PendingOperation> = emptyList(), val meta: Map<String, String> = emptyMap(), val loaded: Boolean = false, val unreadable: Boolean = false, val serverRecords: Map<String, BookRecord> = emptyMap(), val customers: List<Customer> = emptyList(), val serverCustomers: Map<String, Customer> = emptyMap(), val catalog: List<CatalogItem> = emptyList())
 
 data class RecoveredEdit(val local: BookRecord, val server: BookRecord?, val reason: String) {
     fun json() = JSONObject().put("local", local.json()).put("server", server?.json()).put("reason", reason)
@@ -27,20 +29,38 @@ data class RecoveredEdit(val local: BookRecord, val server: BookRecord?, val rea
 class NotebookRepository(val database: NotebookDatabase, private val requestSync: () -> Unit = {}) {
     val dao = database.notebook()
     private val syncLock = Mutex()
+    private var coveredSyncRequests = 0L
+    private val running = MutableStateFlow(false)
+    val syncing = running.asStateFlow()
     internal val writeLock = Mutex()
     internal suspend fun <T> restoring(block: suspend () -> T): T = syncLock.withLock { writeLock.withLock { block() } }
-    val state = combine(dao.observeRecords(), dao.observeQueue(), dao.observeMeta(), dao.observeCustomers()) { _, _, _, _ -> database.withTransaction {
+    val state = combine(dao.observeRecords(), dao.observeQueue(), dao.observeMeta(), dao.observeCustomers(), dao.observeCatalog()) { _, _, _, _, _ -> database.withTransaction {
         val rows = dao.records(); val queue = dao.activeOperations(); val meta = dao.metadata()
         try { NotebookState(rows.map { BookRecord.parse(JSONObject(it.payload)) }, queue, meta.associate { it.key to it.value }, loaded = true,
             serverRecords = rows.mapNotNull { row -> row.serverPayload?.let { row.id to BookRecord.parse(JSONObject(it)) } }.toMap(),
             customers = dao.customers().map { Customer.parse(JSONObject(it.payload)) },
-            serverCustomers = dao.customers().mapNotNull { row -> row.serverPayload?.let { row.id to Customer.parse(JSONObject(it)) } }.toMap()) }
+            serverCustomers = dao.customers().mapNotNull { row -> row.serverPayload?.let { row.id to Customer.parse(JSONObject(it)) } }.toMap(),
+            catalog = dao.catalog().map { CatalogItem.parse(JSONObject(it.payload)) }) }
         catch (_: Exception) { NotebookState(pending = queue, loaded = true, unreadable = true) }
     } }
+    suspend fun submitCatalog(id: String, version: Int, data: JSONObject): CatalogItem = withContext(Dispatchers.IO) {
+        val result = writeLock.withLock { database.withTransaction {
+            require(dao.record(id) == null && dao.customer(id) == null)
+            require(dao.activeFor(id).none { it.state == "failed" }) { "review_required" }
+            val stored = dao.catalogItem(id)
+            val op = JSONObject().put("id", newId()).put("recordId", id).put("expectedVersion", version).put("action", "save_shopping_item").put("data", JSONObject(data.toString()))
+            val after = applyCatalogLocally(op, stored?.let { CatalogItem.parse(JSONObject(it.payload)) })
+            require(dao.catalog().map { CatalogItem.parse(JSONObject(it.payload)) }.none { it.id != id && after.name in it.aliases }) { "catalog_name_exists" }
+            dao.putCatalogItem(StoredCatalogItem(id, after.json().toString(), stored?.serverPayload))
+            dao.queue(PendingOperation(operationId = op.getString("id"), recordId = id, payload = op.toString(), beforePayload = stored?.payload))
+            after
+        } }
+        requestSync(); result
+    }
     suspend fun saveCustomerDraft(value: String) = writeLock.withLock { dao.putMeta(NotebookMeta("customerDraft", value)) }
     suspend fun submitCustomer(id: String, version: Int, data: JSONObject): Customer = withContext(Dispatchers.IO) {
         val result = writeLock.withLock { database.withTransaction {
-            require(dao.record(id) == null)
+            require(dao.record(id) == null && dao.catalogItem(id) == null)
             require(dao.activeFor(id).none { it.state == "failed" }) { "review_required" }
             val stored = dao.customer(id)
             val op = JSONObject().put("id", newId()).put("recordId", id).put("expectedVersion", version).put("action", "save_customer").put("data", JSONObject(data.toString()))
@@ -77,7 +97,7 @@ class NotebookRepository(val database: NotebookDatabase, private val requestSync
         val result = writeLock.withLock { database.withTransaction {
             require(dao.activeFor(recordId).none { it.state == "failed" }) { "review_required" }
             val stored = dao.record(recordId); val before = stored?.let { BookRecord.parse(JSONObject(it.payload)) }
-            require(dao.customer(recordId) == null)
+            require(dao.customer(recordId) == null && dao.catalogItem(recordId) == null)
             val operationData = JSONObject(data.toString())
             if (action == "save_sale") {
                 val linkedId = if (operationData.has("customerId")) operationData.optString("customerId").takeUnless { it.isEmpty() || it == "null" } else before?.customerId
@@ -99,6 +119,10 @@ class NotebookRepository(val database: NotebookDatabase, private val requestSync
             }
             val op = JSONObject().put("id", newId()).put("recordId", recordId).put("expectedVersion", expectedVersion).put("action", action).put("data", operationData)
             val after = applyLocally(op, before)
+            if (action == "save_expense" && operationData.optInt("catalogVersion") == 1) after.items.forEach { item ->
+                val master = item.masterId?.let { dao.catalogItem(it) }?.let { CatalogItem.parse(JSONObject(it.payload)) }
+                require(master != null && (!master.archived || before?.items?.any { it.id == item.id && it.masterId == master.id } == true)) { "catalog_item_unavailable" }
+            }
             if (action == "save_sale" && after.channel == "langsung" && after.customerId == null && after.received < after.amount) {
                 require(!((operationData.has("customerId") && (before == null || before.received == before.amount)) || before?.customerId != null)) { "customer_required" }
             }
@@ -138,6 +162,15 @@ class NotebookRepository(val database: NotebookDatabase, private val requestSync
     }
 
     private suspend fun reconcileSnapshot(json: JSONObject) {
+        if (json.getString("kind") == "shopping_item") {
+            val remote = CatalogItem.parse(json); val current = dao.catalogItem(remote.id)
+            val previous = current?.serverPayload?.let { CatalogItem.parse(JSONObject(it)) }
+            if (previous != null && previous.version > remote.version) return
+            val server = remote.json().toString()
+            dao.putCatalogItem(if (current != null && dao.activeFor(remote.id).isNotEmpty()) current.copy(serverPayload = server)
+                else StoredCatalogItem(remote.id, server, server))
+            return
+        }
         if (json.getString("kind") != "customer") { reconcile(BookRecord.parse(json)); return }
         val remote = Customer.parse(json)
         val current = dao.customer(remote.id)
@@ -155,12 +188,22 @@ class NotebookRepository(val database: NotebookDatabase, private val requestSync
                 JSONObject(candidate.payload).getJSONObject("data").optString("customerId").let { linked ->
                     linked.isEmpty() || linked == "null" ||
                         (dao.customer(linked)?.serverPayload != null && active.none { it.recordId == linked })
+                } && JSONObject(candidate.payload).let { op ->
+                    if (op.getString("action") != "save_expense") true else op.getJSONObject("data").optJSONArray("items").objects().all { item ->
+                        val linked = item.optString("masterId")
+                        linked.isEmpty() || (dao.catalogItem(linked)?.serverPayload != null && dao.activeFor(linked).isEmpty())
+                    }
                 }
         }
     }
 
-    suspend fun synchronize(client: NotebookHttpClient): Boolean = syncLock.withLock {
+    suspend fun synchronize(client: NotebookHttpClient, requestedAt: String? = null): Boolean = syncLock.withLock {
         withContext(Dispatchers.IO) {
+            // Queued triggers covered by a later successful round need no second network round.
+            if (requestedAt != null && dao.meta("syncError").isNullOrEmpty() && SyncRequests.covered(requestedAt, coveredSyncRequests) &&
+                dao.activeOperations().none { it.state == "pending" }) return@withContext true
+            val startedRequests = SyncRequests.current()
+            running.value = true
             try {
                 dao.putMeta(NotebookMeta("syncError", ""))
                 while (true) {
@@ -184,7 +227,23 @@ class NotebookRepository(val database: NotebookDatabase, private val requestSync
                 }
                 // One bounded replay upgrades legacy cached snapshots with creation metadata.
                 // Keep the durable financial cursor monotonic even while replaying earlier pages.
-                var pullCursor = if (dao.meta("chronologyVersion") == "1") dao.meta("cursor") ?: "0" else "0"
+                // A revision avoids downloading the unchanged catalog on each foreground refresh.
+                var catalogAfter = "00000000-0000-0000-0000-000000000000"
+                val knownRevision = dao.meta("catalogRevision").orEmpty()
+                var catalogRevision: String? = null
+                var stableCatalog = true
+                do {
+                    val response = client.get("/v1/shopping-items?after=$catalogAfter&limit=100" + if (catalogAfter == "00000000-0000-0000-0000-000000000000" && knownRevision.isNotEmpty()) "&revision=$knownRevision" else "")
+                    if (response.status == 401 || response.status == 403) throw NotebookAccessDenied(response.body.optString("error", "unauthorized"))
+                    if (response.status !in 200..299) throw IOException("catalog_download_failed")
+                    val revision = response.body.getString("revision")
+                    if (catalogRevision != null && catalogRevision != revision) stableCatalog = false
+                    catalogRevision = revision
+                    database.withTransaction { response.body.getJSONArray("items").objects().forEach { reconcileSnapshot(it) } }
+                    catalogAfter = response.body.optString("next").takeUnless { it.isEmpty() || it == "null" }.orEmpty()
+                } while (catalogAfter.isNotEmpty())
+                if (stableCatalog) dao.putMeta(NotebookMeta("catalogRevision", catalogRevision!!))
+                var pullCursor = if (dao.meta("chronologyVersion") == "1" && dao.meta("catalogVersion") == "1") dao.meta("cursor") ?: "0" else "0"
                 do {
                     val response = client.download(pullCursor)
                     if (response.status == 401 || response.status == 403) throw NotebookAccessDenied(response.body.optString("error", "unauthorized"))
@@ -199,7 +258,9 @@ class NotebookRepository(val database: NotebookDatabase, private val requestSync
                     }
                 } while (response.body.getBoolean("hasMore"))
                 dao.putMeta(NotebookMeta("chronologyVersion", "1"))
+                dao.putMeta(NotebookMeta("catalogVersion", "1"))
                 dao.putMeta(NotebookMeta("lastSync", java.time.Instant.now().toString()))
+                coveredSyncRequests = startedRequests
                 true
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -209,12 +270,50 @@ class NotebookRepository(val database: NotebookDatabase, private val requestSync
             } catch (_: Exception) {
                 dao.putMeta(NotebookMeta("syncError", "connection_failed"))
                 false
+            } finally {
+                running.value = false
             }
         }
     }
 
     // Explicit review archives local operations; their bodies and prior snapshots are retained.
-    suspend fun useServerVersion(id: String) = writeLock.withLock { database.withTransaction {
+    suspend fun useServerVersion(id: String) {
+        writeLock.withLock { database.withTransaction {
+        val master = dao.catalogItem(id)
+        if (master != null) {
+            val conflict = dao.meta("conflict:$id")?.takeIf { it.isNotEmpty() }?.let { CatalogItem.parse(JSONObject(it)) }
+            val server = conflict ?: master.serverPayload?.let { CatalogItem.parse(JSONObject(it)) }
+            require(server != null) { "server_version_unavailable" }
+            if (server.id != id) {
+                require(!server.archived) { "catalog_item_unavailable" }
+                reconcileSnapshot(server.json())
+                dao.records().forEach { stored ->
+                    val local = BookRecord.parse(JSONObject(stored.payload))
+                    if (local.items.none { it.masterId == id }) return@forEach
+                    val active = dao.activeFor(local.id)
+                    val accepted = stored.serverPayload?.let { BookRecord.parse(JSONObject(it)) }
+                    require(local.kind == "expense" && !local.voided && active.isNotEmpty() && active.all { it.state == "pending" }) { "review_required" }
+                    require(accepted == null || (accepted.kind == "expense" && !accepted.voided && accepted.items.none { it.masterId == id })) { "review_required" }
+                    val reason = active.asReversed().firstNotNullOfOrNull { attempt ->
+                        JSONObject(attempt.payload).getJSONObject("data").optString("reason").takeIf { it.isNotBlank() }
+                    } ?: "Catalog conflict reviewed"
+                    val data = JSONObject().put("date", local.date).put("note", local.note).put("reason", reason).put("catalogVersion", 1)
+                        .put("items", JSONArray(local.items.map { if (it.masterId == id) it.copy(masterId = server.id).json() else it.json() }))
+                    val operation = JSONObject().put("id", newId()).put("recordId", local.id).put("expectedVersion", accepted?.version ?: 0)
+                        .put("action", "save_expense").put("data", data)
+                    val replacement = applyLocally(operation, accepted).copy(createdAt = local.createdAt)
+                    active.forEach { dao.updateOperation(it.copy(state = "reviewed")) }
+                    dao.putRecord(stored.copy(payload = replacement.json().toString()))
+                    dao.queue(PendingOperation(operationId = operation.getString("id"), recordId = local.id,
+                        payload = operation.toString(), beforePayload = stored.serverPayload))
+                }
+                dao.removeCatalogItem(id)
+            }
+            dao.activeFor(id).forEach { dao.updateOperation(it.copy(state = "reviewed")) }
+            if (server.id == id) reconcileSnapshot(server.json())
+            dao.putMeta(NotebookMeta("conflict:$id", ""))
+            return@withTransaction
+        }
         val customer = dao.customer(id)
         if (customer != null) {
             require(customer.serverPayload != null) { "server_version_unavailable" }
@@ -230,7 +329,8 @@ class NotebookRepository(val database: NotebookDatabase, private val requestSync
         if (server.id != id) dao.removeRecord(id)
         reconcile(server)
         dao.putMeta(NotebookMeta("conflict:$id", ""))
-    }
+        } }
+        requestSync()
     }
     suspend fun reopenCustomer(id: String): Customer = writeLock.withLock { database.withTransaction {
         val stored = requireNotNull(dao.customer(id))

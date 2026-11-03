@@ -45,9 +45,11 @@ fun FunctionalNotebook() {
         @Suppress("UNCHECKED_CAST") override fun <T : ViewModel> create(modelClass: Class<T>): T = NotebookViewModel(repository) as T
     } })
     val state by model.state.collectAsState()
+    val syncing by repository.syncing.collectAsState()
     val saving by model.saving.collectAsState()
     val saved by model.saved.collectAsState()
     val savedCustomer by model.savedCustomer.collectAsState()
+    val savedCatalog by model.savedCatalog.collectAsState()
     val error by model.error.collectAsState()
     var route by rememberSaveable { mutableStateOf("journal") }
     var showBackup by rememberSaveable { mutableStateOf(false) }
@@ -74,9 +76,11 @@ fun FunctionalNotebook() {
     val keyboard = LocalSoftwareKeyboardController.current
     var createSale by rememberSaveable { mutableStateOf("") }
     var createExpense by rememberSaveable { mutableStateOf("") }
+    var catalogLineId by rememberSaveable { mutableStateOf("") }
+    var selectCreatedCatalog by rememberSaveable { mutableStateOf(false) }
     fun draftJson(): JSONObject = JSONObject().put("route", route).put("date", dateText).put("kind", draftKind).put("id", recordId).put("version", baseVersion).put("reason", reason)
             .put("sale", JSONObject().put("amount", sale.amount).put("customer", sale.customer).put("customerId", sale.customerId ?: JSONObject.NULL).put("paymentAmount", sale.paymentAmount).put("channel", sale.channel).put("paid", sale.paid).put("note", sale.note).put("method", sale.method))
-            .put("expense", JSONArray(expense.map { JSONObject().put("id", it.id).put("name", it.name).put("amount", it.amount) }))
+            .put("expense", JSONArray(expense.map { JSONObject().put("id", it.id).put("name", it.name).put("amount", it.amount).apply { it.masterId?.let { id -> put("masterId", id) } } }))
             .put("receiptAmount", receiptAmount).put("receiptDate", receiptDate).put("receiptMethod", receiptMethod).put("receiptId", receiptId)
             .apply { if (recoveredEdit.isNotEmpty()) put("recoveredEdit", JSONObject(recoveredEdit)) }
     fun persist() {
@@ -97,7 +101,7 @@ fun FunctionalNotebook() {
         draftKind = draft.getString("kind"); reason = draft.getString("reason")
         sale = SaleDraft(s.getString("amount"), s.getString("customer"), s.getString("channel"), s.getBoolean("paid"), s.getString("note"), s.getString("method"),
             s.optString("customerId").takeUnless { it.isEmpty() || it == "null" }, s.optString("paymentAmount"))
-        expense = ArrayList(draft.getJSONArray("expense").objects().map { ExpenseDraftLine(it.getString("id"), it.getString("name"), it.getString("amount")) })
+        expense = ArrayList(draft.getJSONArray("expense").objects().map { ExpenseDraftLine(it.getString("id"), it.getString("name"), it.getString("amount"), it.optString("masterId").takeIf { id -> id.isNotEmpty() }) })
         receiptAmount = draft.getString("receiptAmount"); receiptDate = draft.getString("receiptDate"); receiptMethod = draft.getString("receiptMethod"); receiptId = draft.getString("receiptId")
     }
     fun discardForm() {
@@ -133,7 +137,7 @@ fun FunctionalNotebook() {
         reason = edit.reason; draftKind = local.kind; route = local.kind
         if (local.kind == "sale") sale = SaleDraft(local.amount.toString(), local.customer, displayChannel(local.channel), local.received > 0, local.note, local.receipts.firstOrNull { !it.voided }?.method ?: "cash", local.customerId,
             if (local.received in 1 until local.amount) local.received.toString() else "")
-        else expense = ArrayList(local.items.map { ExpenseDraftLine(it.id, it.name, it.amount.toString()) })
+        else expense = ArrayList(local.items.map { ExpenseDraftLine(it.id, it.name, it.amount.toString(), it.masterId) })
         persist()
     }
     LaunchedEffect(state.loaded, state.meta["restoredAt"]) {
@@ -187,6 +191,16 @@ fun FunctionalNotebook() {
             customerDraft = ""; keyboard?.hide(); model.savedCustomer.value = null
         }
     }
+    fun selectCatalog(item: CatalogItem) {
+        expense = ArrayList(expense.map { if (it.id == catalogLineId) it.copy(name = item.name, masterId = item.id) else it })
+        route = "expense"; model.error.value = ""; persist()
+    }
+    LaunchedEffect(savedCatalog) {
+        savedCatalog?.let { item ->
+            if (selectCreatedCatalog && !item.archived) selectCatalog(item)
+            selectCreatedCatalog = false; model.savedCatalog.value = null
+        }
+    }
     LaunchedEffect(saved) {
         saved?.let {
             if (createSale.isNotEmpty() && JSONObject(createSale).getString("id") == it.id) createSale = ""
@@ -204,6 +218,7 @@ fun FunctionalNotebook() {
         route = when (route) {
             "customer_form" -> JSONObject(customerDraft).optString("returnTo", "customers")
             "customer_picker" -> "sale"
+            "catalog_picker" -> "expense"
             "customers" -> { selectedCustomerId = ""; "customers" }
             "receipt" -> "detail"
             "detail" -> detailReturn
@@ -217,7 +232,7 @@ fun FunctionalNotebook() {
             recoveredEdit = ""
             recordId = record.id; baseVersion = record.version; dateText = record.date; reason = ""
             if (kind == "sale") sale = SaleDraft(record.amount.toString(), record.customer, displayChannel(record.channel), false, record.note, customerId = record.customerId)
-            if (kind == "expense") expense = ArrayList(record.items.map { ExpenseDraftLine(it.id, it.name, it.amount.toString()) })
+            if (kind == "expense") expense = ArrayList(record.items.map { ExpenseDraftLine(it.id, it.name, it.amount.toString(), it.masterId) })
         } else {
             val parked = (if (kind == "sale") createSale else createExpense).takeIf { it.isNotEmpty() }?.let(::JSONObject)
                 ?.takeUnless { draft -> state.records.any { it.id == draft.getString("id") } }
@@ -242,7 +257,7 @@ fun FunctionalNotebook() {
     val entries = presentation(state)
     val selected = state.records.find { it.id == selectedId }
     val date = LocalDate.parse(dateText)
-    val nested = route in listOf("sale", "expense", "receipt", "detail", "customer_form", "customer_picker") || (route == "customers" && selectedCustomerId.isNotEmpty())
+    val nested = route in listOf("sale", "expense", "receipt", "detail", "customer_form", "customer_picker", "catalog_picker") || (route == "customers" && selectedCustomerId.isNotEmpty())
     val customerNavigation = route in listOf("customers", "customer_form", "customer_picker") || (route in listOf("detail", "receipt") && detailReturn == "customers")
     fun navigationIcon(destination: String) = when (destination) { "journal" -> R.drawable.ic_book; "customers" -> R.drawable.ic_customers; else -> R.drawable.ic_chart }
     val formError = financialError(error)
@@ -265,17 +280,24 @@ fun FunctionalNotebook() {
                         LanguageMenu()
                         TextButton(onClick = { keyboard?.hide(); securityScreen = "tools" }) { Text(stringResource(R.string.backup_menu)) }
                     }
-                    val syncProblem = state.pending.any { it.state == "failed" } || state.meta["syncError"].orEmpty().isNotEmpty()
-                    Surface(color = if (syncProblem) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.secondaryContainer,
-                        contentColor = if (syncProblem) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onSecondaryContainer) {
+                    val syncStatus = notebookSyncStatus(state.pending.any { it.state == "failed" }, state.meta["syncError"].orEmpty().isNotEmpty(),
+                        syncConfigured(), state.pending.isNotEmpty(), state.meta["lastSync"].orEmpty().isNotEmpty(), syncing)
+                    Surface(color = MaterialTheme.colorScheme.surface,
+                        contentColor = when (syncStatus) {
+                            R.string.sync_complete -> LocalSyncSuccess.current
+                            R.string.sync_syncing, R.string.sync_pending -> MaterialTheme.colorScheme.secondary
+                            R.string.sync_review -> MaterialTheme.colorScheme.error
+                            else -> MaterialTheme.colorScheme.onSurfaceVariant
+                        }) {
                         Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Text(stringResource(when { state.pending.any { it.state == "failed" } -> R.string.sync_review
-                                state.meta["syncError"].orEmpty().isNotEmpty() -> R.string.sync_connection
-                                !syncConfigured() -> R.string.sync_not_configured
-                                state.pending.isNotEmpty() -> R.string.sync_pending
-                                state.meta["lastSync"].orEmpty().isNotEmpty() -> R.string.sync_complete
-                                else -> R.string.local_development }), style = MaterialTheme.typography.labelLarge,
-                                modifier = Modifier.weight(1f).padding(vertical = 6.dp).semantics { liveRegion = LiveRegionMode.Polite })
+                            Column(Modifier.weight(1f).padding(vertical = 6.dp).semantics { liveRegion = LiveRegionMode.Polite }) {
+                                Text(stringResource(syncStatus), style = MaterialTheme.typography.labelLarge)
+                                state.meta["lastSync"]?.takeIf { it.isNotBlank() }?.let {
+                                    val time = Instant.parse(it).atZone(ZoneId.of("Asia/Jakarta"))
+                                        .format(java.time.format.DateTimeFormatter.ofPattern("dd MMM yyyy HH:mm", java.util.Locale.getDefault()))
+                                    Text(stringResource(R.string.sync_last_success, time), style = MaterialTheme.typography.bodySmall)
+                                }
+                            }
                             if (syncConfigured()) TextButton(onClick = { model.retry(); scheduleSync(context) }, modifier = Modifier.heightIn(min = 48.dp)) { Text(stringResource(R.string.sync_now)) }
                         }
                     }
@@ -304,14 +326,32 @@ fun FunctionalNotebook() {
                             else data.put("reason", reason)
                             model.submit("save_sale", recordId, baseVersion, data)
                         }
-                        "expense" -> ExpenseForm(date, expense, { expense = ArrayList(it); persist() }, formError, real = true, saving = saving, onDate = { dateText = it.toString(); persist() }, extra = {
+                        "expense" -> ExpenseForm(date, expense, { expense = ArrayList(it); persist() }, formError, real = true, saving = saving, onDate = { dateText = it.toString(); persist() },
+                            onSelectItem = { catalogLineId = it; route = "catalog_picker"; persist() }, extra = {
                             if (baseVersion > 0) EntryInput(stringResource(R.string.correction_reason), reason, { reason = it; persist() })
                             TextButton(onClick = ::discardForm, enabled = !saving) { Text(stringResource(R.string.discard_draft)) }
                         }) {
-                            val data = JSONObject().put("date", dateText).put("reason", reason).put("items", JSONArray(expense.filter { it.name.isNotBlank() || it.amount.isNotBlank() }.map {
-                                JSONObject().put("id", it.id).put("name", it.name).put("amount", it.amount)
+                            val data = JSONObject().put("date", dateText).put("reason", reason).put("catalogVersion", 1).put("items", JSONArray(expense.filter { it.name.isNotBlank() || it.amount.isNotBlank() }.map {
+                                val masterId = it.masterId ?: state.catalog.find { master -> it.name.trim() in master.aliases }?.id
+                                JSONObject().put("id", it.id).put("name", it.name).put("amount", it.amount).apply { masterId?.let { id -> put("masterId", id) } }
                             }))
                             model.submit("save_expense", recordId, baseVersion, data)
+                        }
+                        "catalog_picker" -> Column(Modifier.fillMaxSize()) {
+                            state.pending.filter { it.state == "failed" && state.catalog.any { item -> item.id == it.recordId } }.forEach { operation ->
+                                Text(stringResource(R.string.conflict_hint), color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(horizontal = 20.dp))
+                                TextButton(onClick = { model.review(operation.recordId) { success -> if (!success) model.error.value = "server_version_unavailable" } }, modifier = Modifier.heightIn(min = 48.dp)) { Text(stringResource(R.string.use_server)) }
+                            }
+                            Box(Modifier.weight(1f)) {
+                                ShoppingCatalogPicker(state.catalog, state.records, ::selectCatalog,
+                                    onCreate = { name, unit ->
+                                        selectCreatedCatalog = true
+                                        model.submitCatalog(shoppingMasterId(name), 0, JSONObject().put("name", name).put("unit", unit))
+                                    }, onManage = { item, name, unit, archived, why ->
+                                        selectCreatedCatalog = false
+                                        model.submitCatalog(item.id, item.version, JSONObject().put("name", name).put("unit", unit).put("archived", archived).put("reason", why))
+                                    }, onBack = ::back, error = formError, saving = saving)
+                            }
                         }
                         "receipt" -> ReceiptForm(LocalDate.parse(receiptDate), receiptAmount, receiptMethod, formError, state.records.find { it.id == recordId },
                             customer = state.customers.find { it.id == state.records.find { row -> row.id == recordId }?.customerId }, saving = saving,
@@ -321,7 +361,11 @@ fun FunctionalNotebook() {
                             model.submit("add_receipt", recordId, baseVersion, JSONObject().put("id", receiptId).put("date", receiptDate).put("amount", receiptAmount).put("method", receiptMethod).put("reason", "Payment received"))
                         }
                         "detail" -> selected?.let { record ->
-                            RecordDetail(record, state, notice, formError, onEdit = { begin(record.kind, record) }, onReceipt = { receive(record) }, onVoid = { target, why, expected ->
+                            RecordDetail(record, state, notice, formError, saving, onCorrectDate = { target, date, why, expected ->
+                                val data = JSONObject().put("date", date).put("reason", why)
+                                if (target.isNotEmpty()) data.put("receiptId", target)
+                                model.submit("correct_date", record.id, expected, data)
+                            }, onEdit = { begin(record.kind, record) }, onReceipt = { receive(record) }, onVoid = { target, why, expected ->
                                 val data = JSONObject().put("reason", why).put("includeReceipts", true)
                                 if (target.isNotEmpty()) data.put("receiptId", target)
                                 model.submit("void", record.id, expected, data)
@@ -364,6 +408,8 @@ internal fun financialError(code: String): String = if (code.isEmpty()) "" else 
     "draft_unreadable" -> R.string.draft_unreadable
     "customer_required" -> R.string.bon_customer_hint
     "customer_unavailable" -> R.string.customer_unavailable
+    "catalog_name_exists" -> R.string.catalog_name_exists
+    "catalog_item_unavailable" -> R.string.catalog_unavailable
     else -> R.string.invalid_record
 })
 
@@ -426,10 +472,17 @@ private fun ReceiptForm(date: LocalDate, amount: String, method: String, error: 
 }
 
 @Composable
-private fun RecordDetail(record: BookRecord, state: NotebookState, notice: Boolean, error: String, onEdit: () -> Unit, onReceipt: () -> Unit, onVoid: (String, String, Int) -> Unit, onUseServer: () -> Unit, onReopen: () -> Unit, onReopenPayment: () -> Unit) {
+private fun RecordDetail(record: BookRecord, state: NotebookState, notice: Boolean, error: String, saving: Boolean, onCorrectDate: (String, String, String, Int) -> Unit, onEdit: () -> Unit, onReceipt: () -> Unit, onVoid: (String, String, Int) -> Unit, onUseServer: () -> Unit, onReopen: () -> Unit, onReopenPayment: () -> Unit) {
     var voidTarget by rememberSaveable(record.id) { mutableStateOf<String?>(null) }
     var voidVersion by rememberSaveable(record.id) { mutableIntStateOf(record.version) }
     var reason by rememberSaveable(record.id) { mutableStateOf("") }
+    var dateTarget by rememberSaveable(record.id) { mutableStateOf<String?>(null) }
+    var correctedDate by rememberSaveable(record.id) { mutableStateOf(record.date) }
+    var dateVersion by rememberSaveable(record.id) { mutableIntStateOf(record.version) }
+    var dateReason by rememberSaveable(record.id) { mutableStateOf("") }
+    fun correctDate(target: String, date: String) {
+        dateTarget = target; correctedDate = date; dateVersion = record.version; dateReason = ""; voidTarget = null
+    }
     val failed = state.pending.firstOrNull { it.recordId == record.id && it.state == "failed" }
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
         Column(Modifier.widthIn(max = 640.dp).fillMaxHeight().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(20.dp)) {
@@ -456,6 +509,7 @@ private fun RecordDetail(record: BookRecord, state: NotebookState, notice: Boole
                 }
                 if (remote == null && JSONObject(failed.payload).getString("action") in listOf("save_sale", "save_expense")) TextButton(onClick = onReopen) { Text(stringResource(R.string.reopen_local)) }
                 val attempted = JSONObject(failed.payload)
+                if (attempted.getString("action") == "correct_date") Text(stringResource(R.string.date_correction_attempt, attempted.getJSONObject("data").getString("date")))
                 if (attempted.getString("action") == "add_receipt") {
                     val input = attempted.getJSONObject("data")
                     Text(stringResource(R.string.attempted_payment, rupiah(input.getString("amount").toLong()), input.getString("date")))
@@ -474,14 +528,27 @@ private fun RecordDetail(record: BookRecord, state: NotebookState, notice: Boole
                         MoneyRow(dateLabel(LocalDate.parse(payment.date)), payment.amount)
                         Text(stringResource(if (payment.method == "cash") R.string.cash else R.string.transfer))
                         if (payment.voided) Text(stringResource(R.string.voided))
-                        else if (!record.voided) TextButton(onClick = { voidTarget = payment.id; voidVersion = record.version }, colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)) { Text(stringResource(R.string.void_payment)) }
+                        else if (!record.voided) {
+                            TextButton(onClick = { correctDate(payment.id, payment.date) }, enabled = failed == null && !saving, modifier = Modifier.heightIn(min = 48.dp)) { Text(stringResource(R.string.correct_payment_date)) }
+                            TextButton(onClick = { voidTarget = payment.id; voidVersion = record.version }, colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)) { Text(stringResource(R.string.void_payment)) }
+                        }
                     }
                 }
                 if (!record.voided && record.received < record.amount) Button(onClick = onReceipt, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp)) { Text(stringResource(R.string.add_receipt)) }
             }
             if (!record.voided) {
+                TextButton(onClick = { correctDate("", record.date) }, enabled = failed == null && !saving, modifier = Modifier.heightIn(min = 48.dp)) { Text(stringResource(R.string.correct_business_date)) }
                 Button(onClick = onEdit, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp)) { Text(stringResource(R.string.edit_record)) }
                 TextButton(onClick = { voidTarget = ""; voidVersion = record.version }, colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)) { Text(stringResource(R.string.void_record)) }
+            }
+            if (dateTarget != null) {
+                SectionTitle(stringResource(if (dateTarget!!.isEmpty()) R.string.correct_business_date else R.string.correct_payment_date))
+                Text(stringResource(R.string.date_correction_hint))
+                BusinessDateControl(LocalDate.parse(correctedDate)) { correctedDate = it.toString() }
+                EntryInput(stringResource(R.string.correction_reason), dateReason, { dateReason = it })
+                Button(onClick = { onCorrectDate(dateTarget!!, correctedDate, dateReason, dateVersion); dateTarget = null },
+                    enabled = dateReason.isNotBlank() && !saving, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp)) { Text(stringResource(R.string.save_date_correction)) }
+                TextButton(onClick = { dateTarget = null }, modifier = Modifier.heightIn(min = 48.dp)) { Text(stringResource(R.string.cancel)) }
             }
             if (voidTarget != null) {
                 Text(stringResource(if (voidTarget!!.isEmpty()) R.string.void_effect else R.string.void_payment_effect, rupiah(if (voidTarget!!.isEmpty()) record.received else record.receipts.first { it.id == voidTarget }.amount)))

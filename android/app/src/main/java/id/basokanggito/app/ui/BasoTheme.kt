@@ -10,6 +10,8 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.TextStyle
@@ -25,6 +27,10 @@ object Space {
     val large = 24.dp
     val section = 32.dp
 }
+
+internal val LightSyncSuccess = Color(0xFF347A57)
+internal val DarkSyncSuccess = Color(0xFF9BD3AF)
+internal val LocalSyncSuccess = staticCompositionLocalOf { LightSyncSuccess }
 
 internal val LightColors = lightColorScheme(
     primary = Color(0xFF303B53), onPrimary = Color.White,
@@ -96,6 +102,6 @@ fun BasoTheme(darkTheme: Boolean? = null, content: @Composable () -> Unit) {
         colorScheme = if (dark) DarkColors else LightColors,
         typography = BasoTypography,
         shapes = Shapes(small = RoundedCornerShape(12.dp), medium = RoundedCornerShape(16.dp), large = RoundedCornerShape(24.dp)),
-        content = content,
+        content = { CompositionLocalProvider(LocalSyncSuccess provides if (dark) DarkSyncSuccess else LightSyncSuccess, content = content) },
     )
 }

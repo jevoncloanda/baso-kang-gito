@@ -29,7 +29,7 @@ class NotebookBackup(context: Context, private val repository: NotebookRepositor
     private val folder = File(context.applicationContext.cacheDir, "notebook-backup")
     private val identity = Any()
     private data class Snapshot(val records: List<StoredRecord>, val customers: List<StoredCustomer>,
-        val operations: List<PendingOperation>, val metadata: List<NotebookMeta>) {
+        val operations: List<PendingOperation>, val metadata: List<NotebookMeta>, val catalog: List<StoredCatalogItem> = emptyList()) {
         fun summary() = BackupSummary(records.size, customers.size, operations.size, operations.count { it.state == "pending" },
             operations.count { it.state == "failed" }, metadata.any { it.key in setOf("draft", "customerDraft", "recoveredEdit", "paymentRecovery") && it.value.isNotEmpty() })
     }
@@ -77,9 +77,11 @@ class NotebookBackup(context: Context, private val repository: NotebookRepositor
                 if (!empty(capture(includeAllMetadata = true))) throw BackupException("backup_not_empty")
                 val dao = repository.dao
                 snapshot.records.forEach { dao.putRecord(it) }; snapshot.customers.forEach { dao.putCustomer(it) }
+                snapshot.catalog.forEach { dao.putCatalogItem(it) }
                 snapshot.operations.forEach { dao.queue(it) }
                 snapshot.metadata.forEach { dao.putMeta(it) }
                 dao.putMeta(NotebookMeta("cursor", "0")); dao.putMeta(NotebookMeta("chronologyVersion", ""))
+                dao.putMeta(NotebookMeta("catalogRevision", "")); dao.putMeta(NotebookMeta("catalogVersion", ""))
                 dao.putMeta(NotebookMeta("lastSync", "")); dao.putMeta(NotebookMeta("syncError", ""))
                 dao.putMeta(NotebookMeta("restoredAt", java.time.Instant.now().toString()))
             }
@@ -93,19 +95,20 @@ class NotebookBackup(context: Context, private val repository: NotebookRepositor
     }
 
     private suspend fun capture(includeAllMetadata: Boolean = false): Snapshot = repository.dao.let { dao ->
-        Snapshot(dao.records(), dao.customers(), dao.allOperations(), dao.metadata().filter { includeAllMetadata || allowed(it.key) })
+        Snapshot(dao.records(), dao.customers(), dao.allOperations(), dao.metadata().filter { includeAllMetadata || allowed(it.key) }, dao.catalog())
     }
 
     private fun allowed(key: String) = key in setOf("draft", "customerDraft", "recoveredEdit", "paymentRecovery", "cursor", "chronologyVersion") ||
         (key.startsWith("conflict:") && runCatching { validId(key.removePrefix("conflict:")) }.isSuccess)
 
     private fun empty(snapshot: Snapshot): Boolean = snapshot.records.isEmpty() && snapshot.customers.isEmpty() && snapshot.operations.isEmpty() &&
+        snapshot.catalog.all { it.serverPayload != null && it.payload == it.serverPayload } &&
         snapshot.metadata.all { meta ->
             when (meta.key) {
                 "draft" -> meta.value.isEmpty() || runCatching { emptyDraft(JSONObject(meta.value)) }.getOrDefault(false)
                 "customerDraft" -> meta.value.isEmpty() || runCatching { emptyCustomerDraft(JSONObject(meta.value)) }.getOrDefault(false)
                 "cursor" -> meta.value.isEmpty() || meta.value.matches(Regex("0|[1-9][0-9]{0,17}"))
-                "lastSync", "syncError", "chronologyVersion", "lastBackupAt", "restoredAt" -> true
+                "lastSync", "syncError", "chronologyVersion", "catalogRevision", "catalogVersion", "lastBackupAt", "restoredAt" -> true
                 else -> meta.value.isEmpty()
             }
         }
@@ -133,7 +136,7 @@ class NotebookBackup(context: Context, private val repository: NotebookRepositor
             if (bytes.size > MaxFieldBytes) throw BackupException("backup_limit")
             out.writeInt(bytes.size); out.write(bytes)
         }
-        out.writeInt(1)
+        out.writeInt(2)
         out.writeInt(snapshot.records.size)
         snapshot.records.forEach { text(it.id); text(it.date); text(it.payload); text(it.serverPayload) }
         out.writeInt(snapshot.customers.size)
@@ -141,6 +144,8 @@ class NotebookBackup(context: Context, private val repository: NotebookRepositor
         out.writeInt(snapshot.operations.size)
         snapshot.operations.forEach { out.writeLong(it.sequence); text(it.operationId); text(it.recordId); text(it.payload); text(it.beforePayload); text(it.state); text(it.error) }
         out.writeInt(snapshot.metadata.size); snapshot.metadata.forEach { text(it.key); text(it.value) }
+        out.writeInt(snapshot.catalog.size)
+        snapshot.catalog.forEach { text(it.id); text(it.payload); text(it.serverPayload) }
     }
 
     private fun readSnapshot(file: File): Snapshot {
@@ -158,23 +163,25 @@ class NotebookBackup(context: Context, private val repository: NotebookRepositor
                     catch (_: java.nio.charset.CharacterCodingException) { throw BackupException("backup_invalid") }
                 }
                 fun count(): Int = input.readInt().also { if (it !in 0..MaxRows) throw BackupException("backup_limit") }
-                if (input.readInt() != 1) throw BackupException("backup_incompatible")
+                val format = input.readInt()
+                if (format !in 1..2) throw BackupException("backup_incompatible")
                 val records = List(count()) { StoredRecord(text()!!, text()!!, text()!!, text(true)) }
                 val customers = List(count()) { StoredCustomer(text()!!, text()!!, text(true)) }
                 val operations = List(count()) { PendingOperation(input.readLong(), text()!!, text()!!, text()!!, text(true), text()!!, text()!!) }
                 val meta = List(count()) { NotebookMeta(text()!!, text()!!) }
+                val catalog = if (format >= 2) List(count()) { StoredCatalogItem(text()!!, text()!!, text(true)) } else emptyList()
                 if (input.read() != -1) throw BackupException("backup_invalid")
-                Snapshot(records, customers, operations, meta)
+                Snapshot(records, customers, operations, meta, catalog)
             }
         } catch (_: EOFException) { throw BackupException("backup_invalid") }
     }
 
     private fun validate(snapshot: Snapshot) {
-        if (listOf(snapshot.records.size, snapshot.customers.size, snapshot.operations.size, snapshot.metadata.size).any { it > MaxRows })
+        if (listOf(snapshot.records.size, snapshot.customers.size, snapshot.catalog.size, snapshot.operations.size, snapshot.metadata.size).any { it > MaxRows })
             throw BackupException("backup_limit")
         try {
             fun unique(values: List<String>) { require(values.distinct().size == values.size) }
-            unique(snapshot.records.map { it.id } + snapshot.customers.map { it.id })
+            unique(snapshot.records.map { it.id } + snapshot.customers.map { it.id } + snapshot.catalog.map { it.id })
             unique(snapshot.operations.map { it.operationId }); unique(snapshot.metadata.map { it.key })
             require(snapshot.operations.map { it.sequence }.let { it.all { sequence -> sequence > 0 } && it.zipWithNext().all { (a, b) -> a < b } })
             val customers = snapshot.customers.associate { stored ->
@@ -182,14 +189,23 @@ class NotebookBackup(context: Context, private val repository: NotebookRepositor
                 stored.serverPayload?.let { require(Customer.parse(JSONObject(it)).id == stored.id) }
                 stored.id to value
             }
+            val catalog = snapshot.catalog.associate { stored ->
+                val value = CatalogItem.parse(JSONObject(stored.payload)); require(value.id == stored.id)
+                stored.serverPayload?.let { require(CatalogItem.parse(JSONObject(it)).id == stored.id) }
+                stored.id to value
+            }
+            fun references(value: BookRecord) { require(value.items.all { it.masterId == null || it.masterId in catalog }) }
             snapshot.operations.forEach { stored ->
                 validId(stored.operationId); validId(stored.recordId)
                 require(stored.state in setOf("pending", "failed", "acknowledged", "reviewed") && stored.error.length <= 200)
                 val operation = operation(JSONObject(stored.payload))
                 require(operation.getString("id") == stored.operationId && operation.getString("recordId") == stored.recordId)
                 val beforeVersion = stored.beforePayload?.let { before ->
-                    if (operation.getString("action") == "save_customer") Customer.parse(JSONObject(before)).also { require(it.id == stored.recordId) }.version
-                    else record(JSONObject(before)).also { require(it.id == stored.recordId) }.version
+                    when (operation.getString("action")) {
+                        "save_customer" -> Customer.parse(JSONObject(before)).also { require(it.id == stored.recordId) }.version
+                        "save_shopping_item" -> CatalogItem.parse(JSONObject(before)).also { require(it.id == stored.recordId) }.version
+                        else -> record(JSONObject(before)).also { require(it.id == stored.recordId); references(it) }.version
+                    }
                 }
                 require((beforeVersion ?: 0) == operation.getInt("expectedVersion"))
             }
@@ -212,18 +228,19 @@ class NotebookBackup(context: Context, private val repository: NotebookRepositor
             val receipts = mutableSetOf<String>(); val items = mutableSetOf<String>()
             snapshot.records.forEach { stored ->
                 val value = record(JSONObject(stored.payload)); require(value.id == stored.id && value.date == stored.date)
+                references(value)
                 require(value.customerId == null || value.customerId in knownCustomers)
                 require(value.receipts.all { receipts.add(it.id) } && value.items.all { items.add(it.id) })
-                stored.serverPayload?.let { raw -> val server = record(JSONObject(raw)); require(server.id == value.id && server.kind == value.kind); require(server.customerId == null || server.customerId in knownCustomers) }
+                stored.serverPayload?.let { raw -> val server = record(JSONObject(raw)); references(server); require(server.id == value.id && server.kind == value.kind); require(server.customerId == null || server.customerId in knownCustomers) }
             }
-            require(receipts.intersect(snapshot.records.map { it.id }.toSet() + customers.keys).isEmpty())
+            require(receipts.intersect(snapshot.records.map { it.id }.toSet() + customers.keys + catalog.keys).isEmpty())
             metadata.forEach { (key, raw) -> if (raw.isNotEmpty()) when {
                 key == "cursor" -> require(raw.matches(Regex("0|[1-9][0-9]{0,17}")))
                 key == "chronologyVersion" -> require(raw == "1")
                 key == "recoveredEdit" -> {
-                    val edit = RecoveredEdit.parse(raw); record(edit.local.json())
+                    val edit = RecoveredEdit.parse(raw); record(edit.local.json()); references(edit.local)
                     require(edit.local.customerId == null || edit.local.customerId in knownCustomers)
-                    edit.server?.let { record(it.json()); require(it.id == edit.local.id && it.kind == edit.local.kind); require(it.customerId == null || it.customerId in knownCustomers) }
+                    edit.server?.let { record(it.json()); references(it); require(it.id == edit.local.id && it.kind == edit.local.kind); require(it.customerId == null || it.customerId in knownCustomers) }
                 }
                 key == "paymentRecovery" -> {
                     val recovery = JSONObject(raw); val payments = listOf(recovery) + recovery.optJSONArray("remaining").objects()
@@ -235,38 +252,48 @@ class NotebookBackup(context: Context, private val repository: NotebookRepositor
                     }; unique(ids)
                     require(snapshot.records.any { it.id == recovery.getString("recordId") })
                 }
-                key == "draft" -> validateDraft(JSONObject(raw), knownCustomers)
+                key == "draft" -> validateDraft(JSONObject(raw), knownCustomers, catalog.keys)
                 key.startsWith("conflict:") -> {
                     val id = key.removePrefix("conflict:")
                     require(snapshot.records.any { it.id == id } && snapshot.operations.any { it.recordId == id && it.state == "failed" })
-                    val conflict = record(JSONObject(raw)); require(conflict.customerId == null || conflict.customerId in knownCustomers)
+                    val conflict = record(JSONObject(raw)); references(conflict); require(conflict.customerId == null || conflict.customerId in knownCustomers)
                 }
             } }
             snapshot.operations.filter { it.state in setOf("pending", "failed") }.groupBy { it.recordId }.forEach { (id, active) ->
                 val root = snapshot.records.find { it.id == id }?.let { BookRecord.parse(JSONObject(it.payload)) }
                 val customer = customers[id]
-                require(root != null || customer != null)
+                val item = catalog[id]
+                require(root != null || customer != null || item != null)
                 val envelopes = active.map { JSONObject(it.payload) }
                 envelopes.forEach { op ->
                     when (op.getString("action")) {
                         "save_customer" -> require(customer != null)
+                        "save_shopping_item" -> require(item != null)
                         "save_sale", "add_receipt" -> require(root?.kind == "sale")
                         "save_expense" -> require(root?.kind == "expense")
-                        "void" -> require(root != null)
+                        "void", "correct_date" -> require(root != null)
                     }
                 }
                 val versions = envelopes.map { it.getInt("expectedVersion") }
                 require(versions.zipWithNext().all { (a, b) -> b == a + 1 })
-                require((root?.version ?: customer!!.version) == versions.last() + 1)
+                require((root?.version ?: customer?.version ?: item!!.version) == versions.last() + 1)
                 active.forEachIndexed { index, attempt ->
                     val op = envelopes[index]
                     val expected = active.getOrNull(index + 1)?.beforePayload
-                        ?: if (customer != null) snapshot.customers.single { it.id == id }.payload else snapshot.records.single { it.id == id }.payload
+                        ?: when {
+                            customer != null -> snapshot.customers.single { it.id == id }.payload
+                            item != null -> snapshot.catalog.single { it.id == id }.payload
+                            else -> snapshot.records.single { it.id == id }.payload
+                        }
                     require(index == active.lastIndex || active[index + 1].beforePayload != null)
                     if (customer != null) {
                         val before = attempt.beforePayload?.let { Customer.parse(JSONObject(it)) }
                         val after = applyCustomerLocally(op, before)
                         require(withoutChronology(after.json()) == withoutChronology(Customer.parse(JSONObject(expected)).json()))
+                    } else if (item != null) {
+                        val before = attempt.beforePayload?.let { CatalogItem.parse(JSONObject(it)) }
+                        val after = applyCatalogLocally(op, before)
+                        require(after.json().toString() == CatalogItem.parse(JSONObject(expected)).json().toString())
                     } else {
                         val before = attempt.beforePayload?.let { record(JSONObject(it)) }
                         val after = applyLocally(op, before)
@@ -280,7 +307,7 @@ class NotebookBackup(context: Context, private val repository: NotebookRepositor
 
     private fun operation(op: JSONObject): JSONObject {
         validId(op.getString("id")); validId(op.getString("recordId")); version(op, "expectedVersion")
-        require(op.getString("action") in setOf("save_sale", "save_expense", "add_receipt", "void", "save_customer")); op.getJSONObject("data")
+        require(op.getString("action") in setOf("save_sale", "save_expense", "add_receipt", "void", "save_customer", "correct_date", "save_shopping_item")); op.getJSONObject("data")
         return op
     }
 
@@ -300,13 +327,13 @@ class NotebookBackup(context: Context, private val repository: NotebookRepositor
         require(value.receipts.map { it.id }.distinct().size == value.receipts.size && value.items.map { it.id }.distinct().size == value.items.size)
     }
 
-    private fun validateDraft(draft: JSONObject, knownCustomers: Set<String>? = null) {
+    private fun validateDraft(draft: JSONObject, knownCustomers: Set<String>? = null, knownCatalog: Set<String>? = null) {
         listOf("createSale" to "sale", "createExpense" to "expense").forEach { (key, kind) ->
             if (draft.has(key)) {
                 val parked = draft.getJSONObject(key)
                 require(!parked.has("createSale") && !parked.has("createExpense") && !parked.has("recoveredEdit"))
                 require(parked.getString("kind") == kind && parked.getInt("version") == 0)
-                validateDraft(parked, knownCustomers)
+                validateDraft(parked, knownCustomers, knownCatalog)
             }
         }
         validId(draft.getString("id")); version(draft, "version"); validDate(draft.getString("date"))
@@ -316,14 +343,19 @@ class NotebookBackup(context: Context, private val repository: NotebookRepositor
         require(listOf("amount", "customer", "channel", "note", "method").all { sale.opt(it) is String })
         require(sale.getString("channel") in listOf("Langsung", "GoFood", "GrabFood", "ShopeeFood") && sale.opt("paid") is Boolean)
         if (!sale.isNull("customerId")) validId(sale.getString("customerId")).also { if (knownCustomers != null) require(it in knownCustomers) }
-        draft.getJSONArray("expense").objects().forEach { validId(it.getString("id")); require(it.opt("name") is String && it.opt("amount") is String) }
+        draft.getJSONArray("expense").objects().forEach {
+            validId(it.getString("id")); require(it.opt("name") is String && it.opt("amount") is String)
+            if (!it.isNull("masterId")) validId(it.getString("masterId")).also { id -> if (knownCatalog != null) require(id in knownCatalog) }
+        }
         require(draft.opt("receiptAmount") is String); validDate(draft.getString("receiptDate")); validId(draft.getString("receiptId"))
         require(draft.getString("receiptMethod") in listOf("cash", "transfer"))
         draft.optJSONObject("recoveredEdit")?.let {
             val edit = RecoveredEdit.parse(it.toString()); record(edit.local.json())
             if (knownCustomers != null) require(edit.local.customerId == null || edit.local.customerId in knownCustomers)
+            if (knownCatalog != null) require(edit.local.items.all { item -> item.masterId == null || item.masterId in knownCatalog })
             edit.server?.let { server -> record(server.json()); require(server.id == edit.local.id && server.kind == edit.local.kind)
-                if (knownCustomers != null) require(server.customerId == null || server.customerId in knownCustomers) }
+                if (knownCustomers != null) require(server.customerId == null || server.customerId in knownCustomers)
+                if (knownCatalog != null) require(server.items.all { item -> item.masterId == null || item.masterId in knownCatalog }) }
         }
     }
 

@@ -68,7 +68,7 @@ fun SaleForm(date: LocalDate, draft: SaleDraft, onChange: (SaleDraft) -> Unit, s
 }
 
 @Composable
-fun ExpenseForm(date: LocalDate, lines: List<ExpenseDraftLine>, onChange: (List<ExpenseDraftLine>) -> Unit, saveError: String, real: Boolean = false, saving: Boolean = false, onDate: ((LocalDate) -> Unit)? = null, extra: @Composable ColumnScope.() -> Unit = {}, onSave: () -> Unit) {
+fun ExpenseForm(date: LocalDate, lines: List<ExpenseDraftLine>, onChange: (List<ExpenseDraftLine>) -> Unit, saveError: String, real: Boolean = false, saving: Boolean = false, onDate: ((LocalDate) -> Unit)? = null, onSelectItem: ((String) -> Unit)? = null, extra: @Composable ColumnScope.() -> Unit = {}, onSave: () -> Unit) {
     var attempted by rememberSaveable { mutableStateOf(false) }
     var removed by rememberSaveable { mutableStateOf<ExpenseDraftLine?>(null) }
     var removedIndex by rememberSaveable { mutableIntStateOf(0) }
@@ -96,7 +96,7 @@ fun ExpenseForm(date: LocalDate, lines: List<ExpenseDraftLine>, onChange: (List<
                 val nameFocus = remember { FocusRequester() }
                 val amountFocus = remember { FocusRequester() }
                 LaunchedEffect(focusId) {
-                    if (focusId == line.id) { nameFocus.requestFocus(); keyboard?.show(); focusId = "" }
+                    if (focusId == line.id) { nameFocus.requestFocus(); if (onSelectItem == null) keyboard?.show(); focusId = "" }
                 }
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 BoxWithConstraints(Modifier.fillMaxWidth()) {
@@ -114,7 +114,9 @@ fun ExpenseForm(date: LocalDate, lines: List<ExpenseDraftLine>, onChange: (List<
                     val nameError = if (attempted && filled && line.name.isBlank()) stringResource(R.string.name_error) else null
                     val amountError = if (attempted && filled && positiveAmount(line.amount) == null) stringResource(R.string.amount_error) else null
                     val nameField: @Composable (Modifier) -> Unit = { modifier ->
-                        EntryInput(stringResource(R.string.item_name), line.name, updateName, modifier.focusRequester(nameFocus), error = nameError,
+                        if (onSelectItem != null) OutlinedButton(onClick = { onSelectItem(line.id) }, modifier = modifier.focusRequester(nameFocus).heightIn(min = 56.dp), shape = MaterialTheme.shapes.medium) {
+                            Text(line.name.ifBlank { stringResource(R.string.catalog_select_item) })
+                        } else EntryInput(stringResource(R.string.item_name), line.name, updateName, modifier.focusRequester(nameFocus), error = nameError,
                             description = stringResource(R.string.item_name_accessibility, (index + 1).toString()), onNext = { amountFocus.requestFocus() })
                     }
                     val amountField: @Composable (Modifier) -> Unit = { modifier ->

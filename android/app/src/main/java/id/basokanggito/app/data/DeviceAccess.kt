@@ -190,8 +190,8 @@ class AccessViewModel(application: Application) : AndroidViewModel(application) 
             finally { access.refresh(); delay.value = runCatching { access.store.delaySeconds() }.getOrDefault(0); busy.value = false }
         }
     }
-    fun unlock(pin: String) = run { require(access.store.verify(pin)) { "pin_incorrect" }; unlocked.value = true }
-    fun setup(pin: String, confirmation: String) = run { access.store.setPin(pin, confirmation); unlocked.value = true }
+    fun unlock(pin: String) = run { require(access.store.verify(pin)) { "pin_incorrect" }; unlocked.value = true; scheduleSync(getApplication()) }
+    fun setup(pin: String, confirmation: String) = run { access.store.setPin(pin, confirmation); unlocked.value = true; scheduleSync(getApplication()) }
     fun change(old: String, pin: String, confirmation: String, complete: () -> Unit) = run {
         require(access.store.verify(old)) { "pin_incorrect" }; access.store.setPin(pin, confirmation); complete()
     }

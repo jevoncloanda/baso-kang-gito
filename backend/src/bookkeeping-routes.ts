@@ -3,6 +3,7 @@ import type { FastifyInstance } from 'fastify';
 import type { Database } from './database.js';
 import { applyOperation, businessDate, changes, customerList, customerHistory, FinancialError, record, recap, uuid } from './bookkeeping.js';
 import { authenticateDevice, rateLimit } from './device-access.js';
+import { catalogPage } from './shopping-catalog.js';
 
 export function registerBookkeeping(app: FastifyInstance, db: Kysely<Database>) {
   app.register(async routes => {
@@ -12,6 +13,13 @@ export function registerBookkeeping(app: FastifyInstance, db: Kysely<Database>) 
       await rateLimit(db,`financial:${request.ip}`,600);
     });
     routes.post('/operations', async request => applyOperation(db,request.body));
+    routes.get<{Querystring:{after?:string;limit?:string;revision?:string}}>('/shopping-items',async request=>{
+      const limit=Number(request.query.limit??100); const revision=request.query.revision;
+      if (!Number.isInteger(limit)||limit<1||limit>100 || (revision!==undefined&&!/^(0|[1-9][0-9]{0,17})$/.test(revision))) throw new FinancialError(400,'invalid_query');
+      const after=request.query.after??'00000000-0000-0000-0000-000000000000';
+      if (after!=='00000000-0000-0000-0000-000000000000') uuid(after);
+      return catalogPage(db,after,limit,revision);
+    });
     routes.get<{Querystring:{q?:string;after?:string;limit?:string;archived?:string}}>('/customers', async request => {
       if (request.query.archived!==undefined && !['true','false'].includes(request.query.archived)) throw new FinancialError(400,'invalid_query');
       return customerList(db,request.query.q??'',request.query.after??'00000000-0000-0000-0000-000000000000',Number(request.query.limit??100),request.query.archived==='true');

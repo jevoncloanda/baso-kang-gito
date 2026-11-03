@@ -48,7 +48,7 @@ open class NotebookApplication : Application() {
     open val backgroundSyncEnabled: Boolean get() = syncConfigured()
     // A single explicit construction point; instrumentation overrides it with an isolated database.
     open val repository: NotebookRepository by lazy {
-        NotebookRepository(Room.databaseBuilder(this, NotebookDatabase::class.java, "bookkeeping.db").addMigrations(CustomerMigration).build()) { scheduleSync(this) }
+        NotebookRepository(Room.databaseBuilder(this, NotebookDatabase::class.java, "bookkeeping.db").addMigrations(CustomerMigration, ShoppingCatalogMigration).build()) { scheduleSync(this) }
     }
     override fun onCreate() {
         super.onCreate()
@@ -66,11 +66,13 @@ open class NotebookApplication : Application() {
 }
 fun syncConfigured() = BuildConfig.SYNC_URL.startsWith("https://") || (BuildConfig.DEBUG &&
     (BuildConfig.SYNC_URL == "http://127.0.0.1:3000" || (BuildConfig.BUILD_TYPE == "validation" && BuildConfig.SYNC_URL == "http://127.0.0.1:3001")))
-fun scheduleSync(context: Context) {
+// User edits and unlocks replace pending work. Periodic foreground ticks use KEEP so they never reset retry backoff or chain syncs.
+fun scheduleSync(context: Context, policy: ExistingWorkPolicy = ExistingWorkPolicy.APPEND_OR_REPLACE) {
     if (!syncConfigured()) return
     if ((context.applicationContext as? NotebookApplication)?.backgroundSyncEnabled == false) return
-    WorkManager.getInstance(context).enqueueUniqueWork("notebook-sync", ExistingWorkPolicy.APPEND_OR_REPLACE,
+    WorkManager.getInstance(context).enqueueUniqueWork("notebook-sync", policy,
         OneTimeWorkRequestBuilder<NotebookSyncWorker>()
+            .setInputData(workDataOf("requestedAt" to SyncRequests.next()))
             .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
             .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 10, TimeUnit.SECONDS).build())
 }
@@ -79,7 +81,7 @@ class NotebookSyncWorker(context: Context, parameters: WorkerParameters) : Corou
         if (!syncConfigured()) return@withContext Result.success()
         val app = applicationContext as NotebookApplication
         if (!app.access.usable()) return@withContext Result.success()
-        if (app.repository.synchronize(app.access.client())) Result.success()
+        if (app.repository.synchronize(app.access.client(), inputData.getString("requestedAt"))) Result.success()
         else if (!app.access.usable()) Result.success() else Result.retry()
     }
 }

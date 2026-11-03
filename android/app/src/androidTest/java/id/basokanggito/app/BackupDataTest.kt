@@ -197,6 +197,71 @@ class BackupDataTest {
         } finally { file?.delete(); sourceDb.close(); targetDb.close() }
     }
 
+    @Test fun catalogBackupPreservesOfflineRenameLinksHistoricalFactsAndOutbox() = runBlocking {
+        val sourceDb = database(); val targetDb = database(); var file: File? = null
+        try {
+            val source = NotebookRepository(sourceDb); val target = NotebookRepository(targetDb)
+            val originalName = "Daging backup fixture"
+            val master = source.submitCatalog(shoppingMasterId(originalName), 0, JSONObject().put("name", originalName).put("unit", "kg"))
+            val expense = source.submit("save_expense", newId(), 0, JSONObject().put("date", "2095-05-31").put("catalogVersion", 1)
+                .put("items", JSONArray(listOf(ShoppingItem(newId(), originalName, 150000, master.id).json()))))
+            val renamed = source.submitCatalog(master.id, 1, JSONObject().put("name", "Daging sapi backup fixture").put("unit", "kg").put("reason", "Clarify catalog name"))
+            val corrected = source.submit("correct_date", expense.id, 1, JSONObject().put("date", "2095-06-01").put("reason", "Correct shopping date"))
+            source.dao.putMeta(NotebookMeta("catalogRevision", "42")); source.dao.putMeta(NotebookMeta("catalogVersion", "1"))
+            val expectedCatalog = source.dao.catalog(); val expectedRows = source.dao.records(); val expectedOperations = source.dao.allOperations()
+            file = NotebookBackup(context, source).create(password)
+            val restore = NotebookBackup(context, target)
+            file!!.inputStream().use { restore.inspect(it, password) }.use { restore.restore(it) }
+            assertEquals(expectedCatalog, target.dao.catalog()); assertEquals(expectedRows, target.dao.records())
+            assertEquals(expectedOperations, target.dao.allOperations()); assertEquals(4, expectedOperations.size)
+            assertTrue(expectedOperations.all { it.state == "pending" })
+            assertEquals(renamed, CatalogItem.parse(JSONObject(target.dao.catalogItem(master.id)!!.payload)))
+            val restored = BookRecord.parse(JSONObject(target.dao.record(expense.id)!!.payload))
+            assertEquals(corrected, restored); assertEquals(originalName, restored.items.single().name)
+            assertEquals(master.id, restored.items.single().masterId); assertEquals(expense.createdAt, restored.createdAt)
+            assertEquals("", target.dao.meta("catalogRevision")); assertEquals("", target.dao.meta("catalogVersion"))
+            assertEquals("0", target.dao.meta("cursor"))
+            assertEquals("150000", totals(listOf(restored), "2095-06-01", "2095-07-01").expenses.toString())
+        } finally { file?.delete(); sourceDb.close(); targetDb.close() }
+    }
+
+    @Test fun legacyV1BackupRestoresOverDownloadedCatalogCacheButNotAuthoredCatalogChanges() = runBlocking {
+        val db = database(); val file = File.createTempFile("legacy-v1-", ".bkgbak", context.cacheDir)
+        try {
+            val repository = NotebookRepository(db); val restore = NotebookBackup(context, repository)
+            val name = "Downloaded catalog fixture"
+            val master = CatalogItem(shoppingMasterId(name), name)
+            val cached = StoredCatalogItem(master.id, master.json().toString(), master.json().toString())
+            repository.dao.putCatalogItem(cached)
+            repository.dao.putMeta(NotebookMeta("catalogRevision", "17")); repository.dao.putMeta(NotebookMeta("catalogVersion", "1"))
+            assertTrue(restore.isEmpty())
+            repository.dao.putCatalogItem(cached.copy(serverPayload = null)); assertFalse(restore.isEmpty())
+            repository.dao.putCatalogItem(cached.copy(payload = master.copy(name = "Unsaved local rename").json().toString()))
+            assertFalse(restore.isEmpty())
+            repository.dao.putCatalogItem(cached)
+            val record = BookRecord(newId(), "sale", "2095-06-02", 1, 100000, channel = "langsung")
+            file.outputStream().use { output -> BackupCrypto.encrypt(output, password, BackupCrypto.newHeader("legacy-test")) { plaintext ->
+                val data = java.io.DataOutputStream(plaintext)
+                fun text(value: String?) { if (value == null) data.writeInt(-1) else value.toByteArray(Charsets.UTF_8).let { bytes -> data.writeInt(bytes.size); data.write(bytes) } }
+                data.writeInt(1); data.writeInt(1)
+                text(record.id); text(record.date); text(record.json().toString()); text(null)
+                data.writeInt(0); data.writeInt(0); data.writeInt(0)
+            } }
+            file.inputStream().use { restore.inspect(it, password) }.use { prepared ->
+                assertEquals(1, prepared.summary.records)
+                val authored = cached.copy(payload = master.copy(name = "Local edit after preview").json().toString())
+                repository.dao.putCatalogItem(authored)
+                failure("backup_not_empty") { restore.restore(prepared) }
+                assertNull(repository.dao.record(record.id)); assertEquals(authored, repository.dao.catalogItem(master.id))
+                repository.dao.putCatalogItem(cached); restore.restore(prepared)
+            }
+            assertEquals(record, BookRecord.parse(JSONObject(repository.dao.record(record.id)!!.payload)))
+            assertEquals(listOf(cached), repository.dao.catalog())
+            assertEquals("", repository.dao.meta("catalogRevision")); assertEquals("", repository.dao.meta("catalogVersion"))
+            assertFalse(restore.isEmpty())
+        } finally { file.delete(); db.close() }
+    }
+
     @Test fun safeEmptyAllowsDefaultUiDraftButRefusesRealDraftsCustomersHistoryAndLateWrites() = runBlocking {
         val sourceDb = database(); val targetDb = database(); var file: File? = null
         try {

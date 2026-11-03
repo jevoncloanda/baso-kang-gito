@@ -18,9 +18,19 @@ class NotebookViewModel(val repository: NotebookRepository) : ViewModel() {
     val saving = MutableStateFlow(false)
     val saved = MutableStateFlow<BookRecord?>(null)
     val savedCustomer = MutableStateFlow<Customer?>(null)
+    val savedCatalog = MutableStateFlow<CatalogItem?>(null)
     val error = MutableStateFlow("")
     fun draft(payload: String) { viewModelScope.launch { draftLock.withLock { repository.saveDraft(payload) } } }
     fun customerDraft(payload: String) { viewModelScope.launch { draftLock.withLock { repository.saveCustomerDraft(payload) } } }
+    fun submitCatalog(id: String, version: Int, data: JSONObject) {
+        if (saving.value) return
+        saving.value = true
+        viewModelScope.launch {
+            try { savedCatalog.value = repository.submitCatalog(id, version, data); error.value = "" }
+            catch (failure: Exception) { error.value = failure.message?.takeIf { it in setOf("version_conflict", "review_required", "reason_required", "catalog_name_exists") } ?: "invalid_operation" }
+            finally { saving.value = false }
+        }
+    }
     fun submitCustomer(id: String, version: Int, data: JSONObject) {
         if (saving.value) return
         saving.value = true
@@ -42,7 +52,7 @@ class NotebookViewModel(val repository: NotebookRepository) : ViewModel() {
         saving.value = true
         viewModelScope.launch {
             try { saved.value = draftLock.withLock { repository.submit(action, id, version, data) }; error.value = "" }
-            catch (failure: Exception) { error.value = failure.message?.takeIf { it in listOf("version_conflict", "reason_required", "below_received", "linked_receipts", "overpayment", "daily_aggregate_exists", "review_required", "customer_required", "customer_unavailable") } ?: "invalid_operation" }
+            catch (failure: Exception) { error.value = failure.message?.takeIf { it in listOf("version_conflict", "reason_required", "below_received", "linked_receipts", "overpayment", "daily_aggregate_exists", "review_required", "customer_required", "customer_unavailable", "catalog_item_unavailable") } ?: "invalid_operation" }
             finally { saving.value = false }
         }
     }

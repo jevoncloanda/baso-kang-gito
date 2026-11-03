@@ -55,7 +55,14 @@ paths:
         Retry the identical body/ID after a lost response; never generate another ID for a retry.
         Reuse with different content returns 409. expectedVersion=0 creates; edits/receipts/voids
         require the current root version and a nonempty reason. Conflicts never use last-write-wins.
-        One sale root includes its receipts; adding/voiding a receipt increments that root version.
+        One sale root includes its receipts; adding/voiding/correcting a receipt increments that root version.
+        correct_date changes only date (or the selected receiptId date), requires a reason and current root version,
+        preserves creation timestamps and monetary facts, and uses the existing trusted-device write permission.
+        save_shopping_item creates/renames/archives a master item; creates use the UUIDv3 MD5 identity of
+        UTF-8 "bkg-shopping-item-v1:" plus the trimmed exact name. Case and internal spacing stay distinct.
+        Identical concurrent creates converge; edits require the current version. Aliases remain reserved after rename.
+        Current shopping writers send catalogVersion=1 and masterId for every line; omitted catalogVersion identifies
+        installed legacy writers whose exact names are resolved transactionally. Historical line names remain snapshots.
         save_sale creates an individual direct sale or one platform daily aggregate. paid=true
         explicitly records money received and requires receiptId/method; platform defaults unpaid
         in the client. Editing never changes receipts: omit paid/receiptId/method. Reducing below
@@ -132,6 +139,8 @@ paths:
       security: [{deviceToken: []}]
       description: >-
         Start after=0. Persist snapshots and returned cursor in one local transaction.
+        Only sale, expense and customer kinds are returned; catalog snapshots use /v1/shopping-items.
+        Legacy expense transport snapshots may gain masterId references without changing stored audit/replay results.
         Follow hasMore until false. Ignore older root versions, preserve local pending writes,
         and retain tombstones. The stream is retained in full in Milestone 1; no cursor expiry.
         Legacy snapshots are enriched with root/receipt createdAt values at read time without
@@ -282,6 +291,37 @@ paths:
                         sales: {type: string}
                         received: {type: string}
                         expenses: {type: string}
+        '400': {$ref: '#/components/responses/Invalid'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/AccessForbidden'}
+        '429': {$ref: '#/components/responses/AccessLimited'}
+  /v1/shopping-items:
+    get:
+      operationId: getShoppingCatalog
+      summary: Pull the master shopping catalog, including aliases and archived items
+      security: [{deviceToken: []}]
+      description: >-
+        Separate catalog pull preserves installed APK change-feed compatibility. Supply a previously completed
+        revision on the first page to avoid downloading unchanged items. Follow next UUID until null.
+        Cache revision only if every page returns the same revision; otherwise refresh on the next sync.
+        No financial dates, amounts or historical line names change when a master is renamed or archived.
+      parameters:
+        - {name: after, in: query, schema: {type: string, format: uuid}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 100}}
+        - {name: revision, in: query, schema: {type: string, pattern: '^(0|[1-9][0-9]{0,17})$'}}
+      responses:
+        '200':
+          description: Catalog page or an unchanged revision with empty items and notModified=true.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next, revision, notModified]
+                properties:
+                  items: {type: array, items: {$ref: '#/components/schemas/ShoppingCatalogItem'}}
+                  next: {type: string, format: uuid, nullable: true}
+                  revision: {type: string}
+                  notModified: {type: boolean}
         '400': {$ref: '#/components/responses/Invalid'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/AccessForbidden'}
@@ -499,12 +539,25 @@ components:
       oneOf:
         - {$ref: '#/components/schemas/Record'}
         - {$ref: '#/components/schemas/Customer'}
+        - {$ref: '#/components/schemas/ShoppingCatalogItem'}
       discriminator:
         propertyName: kind
         mapping:
           sale: '#/components/schemas/Record'
           expense: '#/components/schemas/Record'
           customer: '#/components/schemas/Customer'
+          shopping_item: '#/components/schemas/ShoppingCatalogItem'
+    ShoppingCatalogItem:
+      type: object
+      required: [id, kind, name, unit, archived, version, aliases]
+      properties:
+        id: {type: string, format: uuid}
+        kind: {type: string, enum: [shopping_item]}
+        name: {type: string, minLength: 1, maxLength: 200}
+        unit: {type: string, maxLength: 50, description: Suggested unit only; no historical quantities are inferred.}
+        archived: {type: boolean}
+        version: {type: integer, minimum: 1}
+        aliases: {type: array, items: {type: string}}
     Customer:
       type: object
       required: [id, kind, name, phone, address, notes, archived, version, createdAt]
@@ -525,12 +578,14 @@ components:
         id: {type: string, format: uuid}
         recordId: {type: string, format: uuid}
         expectedVersion: {type: integer, minimum: 0, maximum: 2147483646}
-        action: {type: string, enum: [save_sale, save_expense, add_receipt, void, save_customer]}
+        action: {type: string, enum: [save_sale, save_expense, add_receipt, void, save_customer, correct_date, save_shopping_item]}
         data:
           type: object
           description: save_sale needs date/channel/amount and paid for creates; paid creates need receiptId/method and may supply paymentAmount. Current clients always send customerId (nullable); new direct Bon requires an active UUID. save_customer needs name with optional phone/address/notes/archived. save_expense needs date/items (1–100). add_receipt needs id/date/amount/method. Corrections need reason (1–500 chars). void optionally targets receiptId or explicitly includes linked receipts. Items have stable UUIDs.
           properties:
             date: {type: string, format: date}
+            catalogVersion: {type: integer, enum: [1]}
+            unit: {type: string, maxLength: 50}
             channel: {type: string, enum: [langsung, gofood, grabfood, shopeefood]}
             amount: {$ref: '#/components/schemas/Amount'}
             customer: {type: string, maxLength: 200}
@@ -558,6 +613,7 @@ components:
                 properties:
                   id: {type: string, format: uuid}
                   name: {type: string, minLength: 1, maxLength: 200}
+                  masterId: {type: string, format: uuid, description: Required for catalogVersion=1 writers.}
                   amount: {$ref: '#/components/schemas/Amount'}
     Record:
       type: object
@@ -578,7 +634,7 @@ components:
         customerId: {type: string, format: uuid, nullable: true, description: Stable explicit Master Customer link. Missing on legacy snapshots; customer remains the historical name snapshot.}
         items:
           type: array
-          items: {type: object, required: [id, name, amount], properties: {id: {type: string, format: uuid}, name: {type: string}, amount: {type: string}}}
+          items: {type: object, required: [id, name, amount], properties: {id: {type: string, format: uuid}, name: {type: string}, amount: {type: string}, masterId: {type: string, format: uuid}}}
         receipts:
           type: array
           items:

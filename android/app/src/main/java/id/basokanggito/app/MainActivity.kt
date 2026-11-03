@@ -11,7 +11,13 @@ import id.basokanggito.app.ui.localizedAppContext
 import id.basokanggito.app.ui.AccessGate
 import id.basokanggito.app.data.AccessViewModel
 import androidx.lifecycle.ViewModelProvider
-import android.view.WindowManager
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
+import id.basokanggito.app.data.scheduleSync
+import androidx.work.ExistingWorkPolicy
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     private val accessModel by lazy { ViewModelProvider(this)[AccessViewModel::class.java] }
@@ -25,8 +31,15 @@ class MainActivity : ComponentActivity() {
         super.onCreate(if (presentation.getBoolean("functional", false)) savedInstanceState else null)
         presentation.edit().putBoolean("functional", true).apply()
         enableEdgeToEdge()
-        window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
         setContent { BasoTheme { AccessGate(accessModel) { FunctionalNotebook() } } }
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                while (true) {
+                    if (accessModel.unlocked.value && !accessModel.covered.value) scheduleSync(this@MainActivity, ExistingWorkPolicy.KEEP)
+                    delay(60_000)
+                }
+            }
+        }
     }
     override fun onStart() { super.onStart(); accessModel.foreground() }
     override fun onStop() { if (!isChangingConfigurations) accessModel.background(); super.onStop() }

@@ -12,6 +12,55 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class NotebookDataTest {
+    @Test fun catalogConflictReviewRequeuesOnlyUnacceptedReferencesWithoutRewritingHistory() = runBlocking {
+        val db = Room.inMemoryDatabaseBuilder(context, NotebookDatabase::class.java).build()
+        try {
+            var scheduled = 0
+            val repository = NotebookRepository(db) { scheduled++ }
+            val id = shoppingMasterId("Offline item")
+            repository.submitCatalog(id, 0, JSONObject().put("name", "Offline item"))
+            val expenseId = newId()
+            val original = repository.submit("save_expense", expenseId, 0, JSONObject().put("date", "2091-01-31").put("note", "Keep purchase facts")
+                .put("catalogVersion", 1).put("items", JSONArray(listOf(ShoppingItem(newId(), "Original description", 150000, id).json()))))
+            val local = repository.submit("correct_date", expenseId, 1, JSONObject().put("date", "2091-02-01").put("reason", "Correct purchase day"))
+            val remote = CatalogItem(shoppingMasterId("Server item"), "Offline item", version = 2, aliases = listOf("Server item", "Offline item"))
+            repository.dao.activeFor(id).forEach { repository.dao.updateOperation(it.copy(state = "failed", error = "catalog_name_exists")) }
+            repository.dao.putMeta(NotebookMeta("conflict:$id", remote.json().toString()))
+            val prior = repository.dao.allOperations(); val beforeScheduled = scheduled
+
+            repository.useServerVersion(id)
+
+            assertNull(repository.dao.catalogItem(id)); assertNotNull(repository.dao.catalogItem(remote.id))
+            assertEquals("", repository.dao.meta("conflict:$id")); assertEquals(beforeScheduled + 1, scheduled)
+            val replacement = BookRecord.parse(JSONObject(repository.dao.record(expenseId)!!.payload))
+            assertEquals(local.copy(version = 1, items = local.items.map { it.copy(masterId = remote.id) }), replacement)
+            assertEquals(original.createdAt, replacement.createdAt)
+            val active = repository.dao.activeFor(expenseId).single()
+            assertFalse(prior.any { it.operationId == active.operationId }); assertNull(active.beforePayload)
+            val operation = JSONObject(active.payload)
+            assertEquals("save_expense", operation.getString("action")); assertEquals(0, operation.getInt("expectedVersion"))
+            assertEquals("Correct purchase day", operation.getJSONObject("data").getString("reason"))
+            prior.forEach { previous ->
+                val archived = repository.dao.allOperations().single { it.operationId == previous.operationId }
+                assertEquals("reviewed", archived.state); assertEquals(previous.payload, archived.payload); assertEquals(previous.beforePayload, archived.beforePayload)
+            }
+
+            val acceptedId = shoppingMasterId("Accepted item")
+            repository.submitCatalog(acceptedId, 0, JSONObject().put("name", "Accepted item"))
+            val accepted = repository.submit("save_expense", newId(), 0, JSONObject().put("date", "2091-02-02").put("catalogVersion", 1)
+                .put("items", JSONArray(listOf(ShoppingItem(newId(), "Accepted description", 10000, acceptedId).json()))))
+            val stored = repository.dao.record(accepted.id)!!
+            repository.dao.putRecord(stored.copy(serverPayload = stored.payload))
+            repository.dao.activeFor(acceptedId).forEach { repository.dao.updateOperation(it.copy(state = "failed", error = "catalog_name_exists")) }
+            repository.dao.putMeta(NotebookMeta("conflict:$acceptedId", remote.json().toString()))
+            val before = repository.dao.allOperations()
+            assertTrue(runCatching { repository.useServerVersion(acceptedId) }.isFailure)
+            assertEquals(before, repository.dao.allOperations()); assertNotNull(repository.dao.catalogItem(acceptedId))
+            assertEquals(stored.payload, repository.dao.record(accepted.id)!!.payload)
+            assertTrue(repository.dao.meta("conflict:$acceptedId")!!.isNotEmpty())
+        } finally { db.close() }
+    }
+
     private val context get() = InstrumentationRegistry.getInstrumentation().targetContext
     private fun database(name: String) = Room.databaseBuilder(context, NotebookDatabase::class.java, name).build()
     private fun sale(date: String = "2091-01-31", paid: Boolean = false, channel: String = "langsung") = JSONObject()
@@ -169,6 +218,81 @@ class NotebookDataTest {
             assertTrue(runCatching { repository.reopenFailed(voidId) }.isFailure)
             assertTrue(BookRecord.parse(JSONObject(repository.dao.record(voidId)!!.payload)).voided)
             assertEquals(3, repository.dao.activeFor(voidId).size)
+        } finally { db.close() }
+    }
+
+    @Test fun offlineDateCorrectionsKeepFinancialFactsAndMoveOnlyTheirOwnReportingDate() = runBlocking {
+        val db = Room.inMemoryDatabaseBuilder(context, NotebookDatabase::class.java).build()
+        try {
+            var triggers = 0
+            val repository = NotebookRepository(db) { triggers++ }
+            val saleId = newId(); val expenseId = newId()
+            val original = repository.submit("save_sale", saleId, 0, sale(paid = true))
+            val shopping = repository.submit("save_expense", expenseId, 0, expense())
+            fun dateData(date: String) = JSONObject().put("date", date).put("reason", "Correct business date")
+            val moved = repository.submit("correct_date", saleId, 1, dateData("2091-02-01"))
+            assertEquals(original.copy(date = "2091-02-01", version = 2), moved)
+            val movedShopping = repository.submit("correct_date", expenseId, 1, dateData("2091-02-01"))
+            assertEquals(shopping.copy(date = "2091-02-01", version = 2), movedShopping)
+            val january = totals(listOf(moved, movedShopping), "2091-01-01", "2091-02-01")
+            assertEquals("0", january.sales.toString()); assertEquals("0", january.expenses.toString())
+            assertEquals("100000", january.received.toString())
+            val february = totals(listOf(moved, movedShopping), "2091-02-01", "2091-03-01")
+            assertEquals("100000", february.sales.toString()); assertEquals("175000", february.expenses.toString())
+            assertEquals("0", february.received.toString())
+            val payment = moved.receipts.single()
+            val received = repository.submit("correct_date", saleId, 2, dateData("2091-02-02").put("receiptId", payment.id))
+            assertEquals(moved.copy(version = 3, receipts = listOf(payment.copy(date = "2091-02-02"))), received)
+            assertEquals("0", totals(listOf(received), "2091-02-01", "2091-02-02").received.toString())
+            assertEquals("100000", totals(listOf(received), "2091-02-02", "2091-02-03").received.toString())
+            assertEquals(5, triggers)
+            val queued = repository.dao.allOperations()
+            assertEquals(5, queued.size); assertTrue(queued.all { it.state == "pending" })
+            assertEquals(moved.json().toString(), queued.last().beforePayload)
+            for ((version, data) in listOf(
+                2 to dateData("2091-02-03"),
+                3 to JSONObject().put("date", "2091-02-03"),
+                3 to dateData("2100-01-01"),
+                3 to dateData("2091-02-30"),
+                3 to dateData("2091-02-03").put("amount", "1"),
+                3 to dateData("2091-02-03").put("receiptId", newId()),
+            )) assertTrue(runCatching { repository.submit("correct_date", saleId, version, data) }.isFailure)
+            assertEquals(5, repository.dao.allOperations().size); assertEquals(5, triggers)
+            assertEquals(received, BookRecord.parse(JSONObject(repository.dao.record(saleId)!!.payload)))
+            val unavailable = NotebookHttpClient("http://127.0.0.1:1", "isolated-test")
+            assertFalse(repository.synchronize(unavailable)); assertFalse(repository.syncing.value)
+            assertFalse(repository.synchronize(unavailable)); assertFalse(repository.syncing.value)
+            assertEquals(queued, repository.dao.allOperations())
+            assertEquals(received, BookRecord.parse(JSONObject(repository.dao.record(saleId)!!.payload)))
+        } finally { db.close() }
+    }
+
+    @Test fun syncSuppressesCoveredTriggersButNeverSkipsPendingEditsOrFailedConnections() = runBlocking {
+        val db = Room.inMemoryDatabaseBuilder(context, NotebookDatabase::class.java).build()
+        try {
+            val repository = NotebookRepository(db)
+            val unavailable = NotebookHttpClient("http://127.0.0.1:1", "isolated-test")
+            val request = SyncRequests.next()
+            val completed = java.time.Instant.now().toString()
+            repository.dao.putMeta(NotebookMeta("lastSync", completed))
+            // A persisted wall-clock success cannot cover a request from this process.
+            assertFalse(repository.synchronize(unavailable, request))
+            assertFalse(repository.syncing.value)
+            assertEquals(completed, repository.dao.meta("lastSync"))
+            val id = newId()
+            val saved = repository.submit("save_sale", id, 0, sale())
+            val pending = repository.dao.activeFor(id).single()
+            assertFalse(repository.synchronize(unavailable, request))
+            assertFalse(repository.syncing.value)
+            assertEquals("connection_failed", repository.dao.meta("syncError"))
+            assertEquals(completed, repository.dao.meta("lastSync"))
+            assertEquals(pending, repository.dao.activeFor(id).single())
+            assertEquals(saved, BookRecord.parse(JSONObject(repository.dao.record(id)!!.payload)))
+            repository.dao.updateOperation(pending.copy(state = "acknowledged"))
+            // A prior failure still requires a real request even when no upload remains.
+            assertFalse(repository.synchronize(unavailable, request))
+            assertFalse(repository.syncing.value)
+            assertEquals("connection_failed", repository.dao.meta("syncError"))
         } finally { db.close() }
     }
 
