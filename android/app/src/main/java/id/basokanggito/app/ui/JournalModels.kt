@@ -20,6 +20,7 @@ data class JournalEntry(
     val lines: List<JournalLine> = emptyList(),
     val receiptFor: String = "", val voided: Boolean = false, val syncState: String = "",
     val createdAt: String = java.time.Instant.EPOCH.toString(),
+    val immediatePayment: Boolean = false,
 ) : Serializable {
     val isExpense: Boolean get() = lines.isNotEmpty()
     val isReceipt: Boolean get() = receiptFor.isNotEmpty()
@@ -34,7 +35,14 @@ data class SaleDraft(
 data class ExpenseDraftLine(val id: String, val name: String = "", val amount: String = "", val masterId: String? = null) : Serializable
 
 val Indonesian: Locale = Locale.forLanguageTag("id-ID")
-val SalesChannels = listOf("Langsung", "GoFood", "GrabFood", "ShopeeFood")
+val SalesChannels = listOf("Langsung", "GoFood", "GrabFood", "ShopeeFood", "GoFood - Mamat", "GoFood - Gito")
+internal val SelectableSalesChannels = listOf("Langsung", "GoFood - Mamat", "GoFood - Gito", "GrabFood", "ShopeeFood")
+
+internal fun channelSales(entries: List<JournalEntry>): List<Pair<String, java.math.BigInteger>> = SalesChannels.mapNotNull { channel ->
+    val sales = entries.filter { !it.isExpense && !it.isReceipt && !it.voided && it.channel == channel }
+    if (channel == "GoFood" && sales.isEmpty()) null
+    else channel to sales.fold(java.math.BigInteger.ZERO) { sum, entry -> sum + entry.amount.toBigInteger() }
+}
 
 
 fun rupiah(amount: Number): String = "Rp ${NumberFormat.getIntegerInstance(Indonesian).format(amount)}"

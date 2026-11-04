@@ -10,8 +10,10 @@ import { bootstrapFixture } from './access-fixture.js';
 import { issueBootstrap } from '../src/device-access.js';
 
 const config=readConfig(); const auth=readTestControlConfig(); if(!auth) throw Error('Configure private development token');
+const port=Number(process.env.VALIDATION_API_PORT ?? 3001);
+if(!Number.isInteger(port)||port<1024||port>65535)throw Error('Invalid validation API port');
 if(process.argv.includes('--stop')) {
-  const response=await fetch('http://127.0.0.1:3001/test/shutdown',{method:'POST',headers:{authorization:`Bearer ${auth.token}`}});
+  const response=await fetch(`http://127.0.0.1:${port}/test/shutdown`,{method:'POST',headers:{authorization:`Bearer ${auth.token}`}});
   if(!response.ok)throw Error('Test server shutdown rejected');
   process.exit(0);
 }
@@ -73,8 +75,8 @@ app.post('/test/shutdown',async(request,reply)=>{
 });
 // Container runs must publish this port on host loopback only.
 try {
-  await app.listen({host:process.argv.includes('--container')?'0.0.0.0':'127.0.0.1',port:3001});
-  console.log('Isolated device integration API listening on port 3001');
+  await app.listen({host:process.argv.includes('--container')?'0.0.0.0':'127.0.0.1',port});
+  console.log(`Isolated device integration API listening on port ${port}`);
 } catch (error) {
   await close();
   throw error;

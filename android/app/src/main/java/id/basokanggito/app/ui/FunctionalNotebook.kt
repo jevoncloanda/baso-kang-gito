@@ -25,19 +25,22 @@ import id.basokanggito.app.data.*
 import org.json.JSONArray
 import org.json.JSONObject
 import java.time.*
+import kotlinx.coroutines.launch
 
 private fun displayChannel(code: String) = SalesChannels[ChannelCodes.indexOf(code).coerceAtLeast(0)]
 private fun channelCode(label: String) = ChannelCodes[SalesChannels.indexOf(label).coerceAtLeast(0)]
 internal fun presentation(state: NotebookState): List<JournalEntry> = state.records.flatMap { record ->
+    val immediate = record.receipts.firstOrNull { it.id == record.initialReceiptId && !it.voided && !record.voided &&
+        record.kind == "sale" && record.channel == "langsung" && it.date == record.date && it.amount == record.amount }
     val sync = state.pending.filter { it.recordId == record.id }.let { if (it.any { p -> p.state == "failed" }) "failed" else if (it.isNotEmpty()) "pending" else "" }
     val root = JournalEntry(record.id, record.date, if (record.kind == "expense") "Belanja" else displayChannel(record.channel),
-        record.amount, record.received, record.customer, record.note, record.items.map { JournalLine(it.name, it.amount) }, voided = record.voided, syncState = sync, createdAt = record.createdAt)
-    listOf(root) + record.receipts.map { payment -> JournalEntry(payment.id, payment.date, displayChannel(record.channel), payment.amount,
+        record.amount, record.received, record.customer, record.note, record.items.map { JournalLine(it.name, it.amount) }, voided = record.voided, syncState = sync, createdAt = record.createdAt, immediatePayment = immediate != null)
+    listOf(root) + record.receipts.filterNot { it.id == immediate?.id }.map { payment -> JournalEntry(payment.id, payment.date, displayChannel(record.channel), payment.amount,
         customer = record.customer, receiptFor = record.id, voided = record.voided || payment.voided, syncState = sync, createdAt = payment.createdAt) }
 }.sortedWith(compareByDescending<JournalEntry> { it.date }.thenByDescending { Instant.parse(it.createdAt) }.thenBy { it.id })
 
 @Composable
-fun FunctionalNotebook() {
+fun FunctionalNotebook(journalReset: String = "", navigationSession: String = "") {
     val context = LocalContext.current
     val accessState by (context.applicationContext as NotebookApplication).access.state.collectAsState()
     val repository = (context.applicationContext as NotebookApplication).repository
@@ -55,6 +58,13 @@ fun FunctionalNotebook() {
     var showBackup by rememberSaveable { mutableStateOf(false) }
     var securityScreen by rememberSaveable { mutableStateOf("") }
     var dateText by rememberSaveable { mutableStateOf(businessToday().toString()) }
+    var journalDateText by rememberSaveable { mutableStateOf(businessToday().toString()) }
+    var appliedJournalReset by rememberSaveable { mutableStateOf("") }
+    LaunchedEffect(journalReset) {
+        if (journalReset != appliedJournalReset) {
+            journalDateText = businessToday().toString(); appliedJournalReset = journalReset
+        }
+    }
     var monthText by rememberSaveable { mutableStateOf(YearMonth.from(businessToday()).toString()) }
     var selectedId by rememberSaveable { mutableStateOf("") }
     var selectedCustomerId by rememberSaveable { mutableStateOf("") }
@@ -78,6 +88,13 @@ fun FunctionalNotebook() {
     var createExpense by rememberSaveable { mutableStateOf("") }
     var catalogLineId by rememberSaveable { mutableStateOf("") }
     var selectCreatedCatalog by rememberSaveable { mutableStateOf(false) }
+    var appliedNavigationSession by rememberSaveable { mutableStateOf("") }
+    val scope = rememberCoroutineScope()
+    fun protectDraft(): Boolean {
+        val protected = draftKind == "receipt" || (draftKind in listOf("sale", "expense") && (baseVersion > 0 || recoveredEdit.isNotEmpty()))
+        if (protected && route !in listOf("sale", "expense", "receipt")) { model.error.value = "finish_draft_first"; return true }
+        return false
+    }
     fun draftJson(): JSONObject = JSONObject().put("route", route).put("date", dateText).put("kind", draftKind).put("id", recordId).put("version", baseVersion).put("reason", reason)
             .put("sale", JSONObject().put("amount", sale.amount).put("customer", sale.customer).put("customerId", sale.customerId ?: JSONObject.NULL).put("paymentAmount", sale.paymentAmount).put("channel", sale.channel).put("paid", sale.paid).put("note", sale.note).put("method", sale.method))
             .put("expense", JSONArray(expense.map { JSONObject().put("id", it.id).put("name", it.name).put("amount", it.amount).apply { it.masterId?.let { id -> put("masterId", id) } } }))
@@ -121,6 +138,7 @@ fun FunctionalNotebook() {
         model.error.value = ""; route = "customer_form"
     }
     fun receive(record: BookRecord) {
+        if (protectDraft()) return
         selectedId = record.id; recordId = record.id; baseVersion = record.version; receiptId = newId(); receiptAmount = (record.amount - record.received).toString()
         receiptDate = businessToday().toString(); receiptMethod = if (record.channel == "langsung") "cash" else "transfer"; route = "receipt"; draftKind = "receipt"; persist()
     }
@@ -183,6 +201,30 @@ fun FunctionalNotebook() {
             draftLoaded = true
         }
     }
+    LaunchedEffect(navigationSession, draftLoaded) {
+        if (draftLoaded && navigationSession.isNotEmpty() && navigationSession != appliedNavigationSession) {
+            model.withDrafts { Unit }
+            route = "journal"; selectedId = ""; selectedCustomerId = ""; detailReturn = "journal"
+            showBackup = false; securityScreen = ""; notice = false; keyboard?.hide()
+            journalDateText = businessToday().toString(); appliedNavigationSession = navigationSession
+        }
+    }
+    fun resumeDraft() { scope.launch {
+        val metadata = model.withDrafts { repository.dao.metadata().associate { it.key to it.value } }
+        runCatching {
+            when {
+                !metadata["customerDraft"].isNullOrEmpty() -> { customerDraft = metadata.getValue("customerDraft"); route = "customer_form" }
+                !metadata["paymentRecovery"].isNullOrEmpty() -> restorePayment(JSONObject(metadata.getValue("paymentRecovery")))
+                !metadata["recoveredEdit"].isNullOrEmpty() -> restoreEdit(RecoveredEdit.parse(metadata.getValue("recoveredEdit")))
+                else -> metadata["draft"]?.takeIf { it.isNotEmpty() }?.let { raw ->
+                    val root = JSONObject(raw)
+                    val draft = if (root.optString("kind") in listOf("sale", "expense", "receipt")) root else root.optJSONObject("createSale") ?: root.optJSONObject("createExpense")
+                    if (draft != null) { restoreDraft(draft); route = draft.getString("kind") }
+                }
+            }
+            model.error.value = ""
+        }.onFailure { model.error.value = "draft_unreadable" }
+    } }
     LaunchedEffect(savedCustomer) {
         savedCustomer?.let { customer ->
             val returnTo = customerDraft.takeIf { it.isNotEmpty() }?.let { JSONObject(it).optString("returnTo", "customers") } ?: "customers"
@@ -227,6 +269,7 @@ fun FunctionalNotebook() {
         model.error.value = ""; persist()
     }
     fun begin(kind: String, record: BookRecord? = null) {
+        if (protectDraft()) return
         model.error.value = ""; notice = false
         if (record != null) {
             recoveredEdit = ""
@@ -241,6 +284,7 @@ fun FunctionalNotebook() {
                 recordId = newId(); baseVersion = 0; reason = ""; recoveredEdit = ""
                 sale = SaleDraft(); expense = arrayListOf(ExpenseDraftLine(newId()))
             }
+            if (route == "journal") dateText = journalDateText
         }
         draftKind = kind; route = kind; persist()
     }
@@ -252,11 +296,11 @@ fun FunctionalNotebook() {
     if (securityScreen == "pin") { ChangePinScreen({ securityScreen = "tools" }); return }
     if (securityScreen == "devices") { DeviceManagementScreen({ securityScreen = "tools" }); return }
     if (showBackup) { BackupScreen(model) { showBackup = false; securityScreen = "tools" }; return }
-    if (!state.loaded || !draftLoaded) { Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }; return }
+    if (!state.loaded || !draftLoaded || (navigationSession.isNotEmpty() && navigationSession != appliedNavigationSession)) { Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }; return }
     if (state.unreadable || error == "draft_unreadable") { Text(stringResource(if (state.unreadable) R.string.storage_unreadable else R.string.draft_unreadable), Modifier.padding(24.dp)); return }
     val entries = presentation(state)
     val selected = state.records.find { it.id == selectedId }
-    val date = LocalDate.parse(dateText)
+    val date = LocalDate.parse(if (route == "journal") journalDateText else dateText)
     val nested = route in listOf("sale", "expense", "receipt", "detail", "customer_form", "customer_picker", "catalog_picker") || (route == "customers" && selectedCustomerId.isNotEmpty())
     val customerNavigation = route in listOf("customers", "customer_form", "customer_picker") || (route in listOf("detail", "receipt") && detailReturn == "customers")
     fun navigationIcon(destination: String) = when (destination) { "journal" -> R.drawable.ic_book; "customers" -> R.drawable.ic_customers; else -> R.drawable.ic_chart }
@@ -298,9 +342,16 @@ fun FunctionalNotebook() {
                                     Text(stringResource(R.string.sync_last_success, time), style = MaterialTheme.typography.bodySmall)
                                 }
                             }
-                            if (syncConfigured()) TextButton(onClick = { model.retry(); scheduleSync(context) }, modifier = Modifier.heightIn(min = 48.dp)) { Text(stringResource(R.string.sync_now)) }
+                            if (syncConfigured()) TextButton(onClick = { model.retry(); scheduleSync(context, forceCompatibility = true) }, modifier = Modifier.heightIn(min = 48.dp)) { Text(stringResource(R.string.sync_now)) }
                         }
                     }
+                    AppVersionPolicy.cached(state.meta)?.takeIf { it.updateAvailable() && !it.required() }?.let { policy ->
+                        Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text(stringResource(if (policy.updateRecommended()) R.string.app_update_recommended else R.string.app_update_available, policy.versionName), modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+                            AppUpdateButton(policy)
+                        }
+                    }
+                    if (state.meta["compatibilityError"] == "unknown") Text(stringResource(R.string.app_compatibility_unknown), modifier = Modifier.padding(horizontal = 20.dp), style = MaterialTheme.typography.bodySmall)
                 }
             }, bottomBar = {
                 if (!rail && !nested) NavigationBar(Modifier.testTag("navigation-bottom"), containerColor = MaterialTheme.colorScheme.surface) {
@@ -387,9 +438,15 @@ fun FunctionalNotebook() {
                                     .put("notes", draft.optString("notes")).put("archived", draft.optBoolean("archived")).put("reason", draft.optString("reason"))
                                 model.submitCustomer(draft.getString("id"), draft.getInt("version"), data)
                             })
-                        "recap" -> MonthlyRecap(entries, YearMonth.parse(monthText), { monthText = it.toString() }, realRecords = state.records) { dateText = it; route = "journal" }
-                        else -> Journal(entries.filter { it.date == dateText }, date, { dateText = it.toString() }, { begin("sale") }, { begin("expense") },
-                            { selectedId = it.receiptFor.ifEmpty { it.id }; detailReturn = "journal"; route = "detail"; notice = false }, realTotals = totals(state.records, dateText, date.plusDays(1).toString()))
+                        "recap" -> MonthlyRecap(entries, YearMonth.parse(monthText), { monthText = it.toString() }, realRecords = state.records) { journalDateText = it; route = "journal" }
+                        else -> Column(Modifier.fillMaxSize()) {
+                            if (draftKind.isNotEmpty() || createSale.isNotEmpty() || createExpense.isNotEmpty() || customerDraft.isNotEmpty()) {
+                                TextButton(onClick = ::resumeDraft, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp)) { Text(stringResource(R.string.resume_notebook_draft)) }
+                            }
+                            if (formError.isNotEmpty()) Text(formError, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(horizontal = 20.dp))
+                            Box(Modifier.weight(1f)) { Journal(entries.filter { it.date == journalDateText }, LocalDate.parse(journalDateText), { journalDateText = it.toString() }, { begin("sale") }, { begin("expense") },
+                                { selectedId = it.receiptFor.ifEmpty { it.id }; detailReturn = "journal"; route = "detail"; notice = false }, realTotals = totals(state.records, journalDateText, LocalDate.parse(journalDateText).plusDays(1).toString())) }
+                        }
                     }
                     if (saving) LinearProgressIndicator(Modifier.fillMaxWidth().align(Alignment.TopCenter))
                 }
@@ -410,6 +467,7 @@ internal fun financialError(code: String): String = if (code.isEmpty()) "" else 
     "customer_unavailable" -> R.string.customer_unavailable
     "catalog_name_exists" -> R.string.catalog_name_exists
     "catalog_item_unavailable" -> R.string.catalog_unavailable
+    "finish_draft_first" -> R.string.finish_draft_first
     else -> R.string.invalid_record
 })
 

@@ -22,6 +22,15 @@ class NotebookViewModel(val repository: NotebookRepository) : ViewModel() {
     val error = MutableStateFlow("")
     fun draft(payload: String) { viewModelScope.launch { draftLock.withLock { repository.saveDraft(payload) } } }
     fun customerDraft(payload: String) { viewModelScope.launch { draftLock.withLock { repository.saveCustomerDraft(payload) } } }
+    val checkingCompatibility = MutableStateFlow(false)
+    fun checkCompatibility() {
+        if (!syncConfigured() || checkingCompatibility.value) return
+        checkingCompatibility.value = true
+        viewModelScope.launch {
+            try { repository.checkCompatibility(NotebookHttpClient(id.basokanggito.app.BuildConfig.SYNC_URL, "")) }
+            finally { checkingCompatibility.value = false }
+        }
+    }
     fun submitCatalog(id: String, version: Int, data: JSONObject) {
         if (saving.value) return
         saving.value = true

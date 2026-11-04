@@ -29,6 +29,7 @@ data class RecoveredEdit(val local: BookRecord, val server: BookRecord?, val rea
 class NotebookRepository(val database: NotebookDatabase, private val requestSync: () -> Unit = {}) {
     val dao = database.notebook()
     private val syncLock = Mutex()
+    private val compatibilityLock = Mutex()
     private var coveredSyncRequests = 0L
     private val running = MutableStateFlow(false)
     val syncing = running.asStateFlow()
@@ -197,15 +198,36 @@ class NotebookRepository(val database: NotebookDatabase, private val requestSync
         }
     }
 
-    suspend fun synchronize(client: NotebookHttpClient, requestedAt: String? = null): Boolean = syncLock.withLock {
+    suspend fun saveCompatibilityPolicy(json: JSONObject) {
+        dao.putMeta(NotebookMeta("appVersionPolicy", AppVersionPolicy.parse(json).json().toString()))
+    }
+    suspend fun updateRequired(): Boolean = dao.meta("appVersionPolicy")?.let { runCatching { AppVersionPolicy.parse(JSONObject(it)).required() }.getOrDefault(false) } ?: false
+    suspend fun checkCompatibility(client: NotebookHttpClient): Boolean = compatibilityLock.withLock { withContext(Dispatchers.IO) {
+        try {
+            val response = client.get("/v1/app-version")
+            if (response.status != 200) throw IOException("compatibility_unavailable")
+            val policy = AppVersionPolicy.parse(response.body)
+            saveCompatibilityPolicy(response.body)
+            dao.putMeta(NotebookMeta("compatibilityError", ""))
+            if (policy.required()) dao.putMeta(NotebookMeta("syncError", "app_update_required"))
+            else if (dao.meta("syncError") == "app_update_required") dao.putMeta(NotebookMeta("syncError", ""))
+            !policy.required()
+        } catch (cancelled: CancellationException) { throw cancelled }
+        catch (_: Exception) { dao.putMeta(NotebookMeta("compatibilityError", "unknown")); false }
+    } }
+    suspend fun synchronize(client: NotebookHttpClient, requestedAt: String? = null, forceCompatibility: Boolean = false): Boolean = syncLock.withLock {
         withContext(Dispatchers.IO) {
             // Queued triggers covered by a later successful round need no second network round.
-            if (requestedAt != null && dao.meta("syncError").isNullOrEmpty() && SyncRequests.covered(requestedAt, coveredSyncRequests) &&
+            if (!forceCompatibility && requestedAt != null && dao.meta("syncError").isNullOrEmpty() && SyncRequests.covered(requestedAt, coveredSyncRequests) &&
                 dao.activeOperations().none { it.state == "pending" }) return@withContext true
             val startedRequests = SyncRequests.current()
             running.value = true
             try {
                 dao.putMeta(NotebookMeta("syncError", ""))
+                if (!checkCompatibility(client)) {
+                    if (updateRequired()) throw AppUpdateRequired(JSONObject(dao.meta("appVersionPolicy")!!))
+                    throw IOException("compatibility_unavailable")
+                }
                 while (true) {
                     val next = nextUpload() ?: break
                     val response = client.upload(JSONObject(next.payload))
@@ -243,7 +265,7 @@ class NotebookRepository(val database: NotebookDatabase, private val requestSync
                     catalogAfter = response.body.optString("next").takeUnless { it.isEmpty() || it == "null" }.orEmpty()
                 } while (catalogAfter.isNotEmpty())
                 if (stableCatalog) dao.putMeta(NotebookMeta("catalogRevision", catalogRevision!!))
-                var pullCursor = if (dao.meta("chronologyVersion") == "1" && dao.meta("catalogVersion") == "1") dao.meta("cursor") ?: "0" else "0"
+                var pullCursor = if (dao.meta("chronologyVersion") == "1" && dao.meta("catalogVersion") == "1" && dao.meta("activityVersion") == "1") dao.meta("cursor") ?: "0" else "0"
                 do {
                     val response = client.download(pullCursor)
                     if (response.status == 401 || response.status == 403) throw NotebookAccessDenied(response.body.optString("error", "unauthorized"))
@@ -259,11 +281,16 @@ class NotebookRepository(val database: NotebookDatabase, private val requestSync
                 } while (response.body.getBoolean("hasMore"))
                 dao.putMeta(NotebookMeta("chronologyVersion", "1"))
                 dao.putMeta(NotebookMeta("catalogVersion", "1"))
+                dao.putMeta(NotebookMeta("activityVersion", "1"))
                 dao.putMeta(NotebookMeta("lastSync", java.time.Instant.now().toString()))
                 coveredSyncRequests = startedRequests
                 true
             } catch (cancelled: CancellationException) {
                 throw cancelled
+            } catch (update: AppUpdateRequired) {
+                saveCompatibilityPolicy(update.policy)
+                dao.putMeta(NotebookMeta("syncError", "app_update_required"))
+                false
             } catch (denied: NotebookAccessDenied) {
                 dao.putMeta(NotebookMeta("syncError", denied.message ?: "unauthorized"))
                 false

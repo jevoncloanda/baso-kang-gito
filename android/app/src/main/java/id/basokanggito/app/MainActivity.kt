@@ -5,6 +5,8 @@ import android.content.Context
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import id.basokanggito.app.ui.BasoTheme
 import id.basokanggito.app.ui.FunctionalNotebook
 import id.basokanggito.app.ui.localizedAppContext
@@ -31,7 +33,14 @@ class MainActivity : ComponentActivity() {
         super.onCreate(if (presentation.getBoolean("functional", false)) savedInstanceState else null)
         presentation.edit().putBoolean("functional", true).apply()
         enableEdgeToEdge()
-        setContent { BasoTheme { AccessGate(accessModel) { FunctionalNotebook() } } }
+        setContent {
+            val journalReset by accessModel.journalReset.collectAsState()
+            val navigationSession by accessModel.navigationSession.collectAsState()
+            BasoTheme {
+                AccessGate(accessModel) { FunctionalNotebook(journalReset, navigationSession) }
+                id.basokanggito.app.ui.AppUpdateDownloadDialog()
+            }
+        }
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 while (true) {

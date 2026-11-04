@@ -7,7 +7,7 @@ type Db = Kysely<Database> | Transaction<Database>;
 export type Receipt = { id: string; date: string; amount: string; method: 'cash'|'transfer'; voided: boolean; createdAt?: string };
 export type RecordData = {
   id: string; kind: 'sale'|'expense'; date: string; version: number; amount: string; note: string; voided: boolean;
-  channel?: string; origin?: string; entryKind?: string; customer?: string; customerId?: string | null; createdAt?: string;
+  channel?: string; origin?: string; entryKind?: string; customer?: string; customerId?: string | null; createdAt?: string; initialReceiptId?:string;
   receipts?: Receipt[]; items?: { id: string; name: string; amount: string; masterId?:string }[];
 };
 export type CustomerData = {
@@ -19,7 +19,7 @@ export class FinancialError extends Error {
   constructor(public status: number, public code: string, public current?: Snapshot) { super(code); }
 }
 const invalid = () => new FinancialError(400, 'invalid_operation');
-export const channels = ['langsung', 'gofood', 'grabfood', 'shopeefood'];
+export const channels = ['langsung', 'gofood', 'grabfood', 'shopeefood', 'gofood_mamat', 'gofood_gito'];
 export function money(value: unknown): string {
   if (typeof value !== 'string' || !/^[1-9][0-9]{0,11}$/.test(value)) throw invalid();
   return value;
@@ -58,6 +58,10 @@ export async function record(db: Db, id: string): Promise<RecordData | undefined
     FROM sales WHERE id=${id}::uuid`.execute(db);
   const root = sale.rows[0];
   if (root) {
+    const initial=(await sql<{id:string|null}>`SELECT after_record->'receipts'->0->>'id' AS id FROM financial_revisions
+      WHERE record_id=${id}::uuid AND before_record IS NULL AND after_record->>'kind'='sale'
+      ORDER BY sequence LIMIT 1`.execute(db)).rows[0]?.id;
+    if (initial) root.initialReceiptId=initial;
     root.receipts = (await sql<Receipt>`SELECT r.id, r.received_date::text AS date, a.amount_rupiah::text AS amount, r.method,
       (r.voided_at IS NOT NULL) AS voided,
       to_char(r.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS "createdAt"
@@ -244,7 +248,9 @@ export async function applyOperation(db: Kysely<Database>, input: unknown) {
         await sql`UPDATE sales SET voided_at=now(),void_reason=${reason},version=version+1,updated_at=now() WHERE id=${recordId}::uuid`.execute(tx);
       } else await sql`UPDATE expense_entries SET voided_at=now(),void_reason=${reason},version=version+1,updated_at=now() WHERE id=${recordId}::uuid`.execute(tx);
     } else throw invalid();
-    const after=(await record(tx,recordId) ?? await customer(tx,recordId) ?? await catalogItem(tx,recordId))!; const cursor=(BigInt(state.cursor)+1n).toString(); const result={record:after,cursor};
+    const after=(await record(tx,recordId) ?? await customer(tx,recordId) ?? await catalogItem(tx,recordId))!;
+    if (!before && after.kind==='sale' && op.action==='save_sale' && data.paid===true) after.initialReceiptId=uuid(data.receiptId);
+    const cursor=(BigInt(state.cursor)+1n).toString(); const result={record:after,cursor};
     await sql`INSERT INTO financial_operations(id,payload_hash,result) VALUES(${id}::uuid,${hash},${JSON.stringify(result)}::jsonb)`.execute(tx);
     await sql`INSERT INTO financial_revisions(operation_id,record_id,reason,before_record,after_record)
       VALUES(${id}::uuid,${recordId}::uuid,${reason},${before?JSON.stringify(before):null}::jsonb,${JSON.stringify(after)}::jsonb)`.execute(tx);
@@ -268,6 +274,17 @@ export async function changes(db:Db, after:string,limit:number) {
   // Installed APKs only understand financial/customer snapshots. Catalog has its own versioned pull.
   const rows=(await sql<{cursor:string;record:RecordData|CustomerData}>`SELECT cursor::text,record FROM sync_changes WHERE cursor>${after}::bigint
     AND record->>'kind'<>'shopping_item' ORDER BY sync_changes.cursor LIMIT ${limit}`.execute(db)).rows;
+  const saleIds=[...new Set(rows.flatMap(({record})=>record.kind==='sale'&&!record.initialReceiptId?[record.id]:[]))];
+  if (saleIds.length) {
+    const initial=(await sql<{id:string;receiptId:string|null}>`SELECT DISTINCT ON(record_id) record_id AS id,
+      after_record->'receipts'->0->>'id' AS "receiptId" FROM financial_revisions
+      WHERE record_id=ANY(${saleIds}::uuid[]) AND before_record IS NULL AND after_record->>'kind'='sale'
+      ORDER BY record_id,sequence`.execute(db)).rows;
+    const receipts=new Map(initial.map(row=>[row.id,row.receiptId]));
+    for (const {record} of rows) if (record.kind==='sale') {
+      const receiptId=receipts.get(record.id); if (!record.initialReceiptId && receiptId) record.initialReceiptId=receiptId;
+    }
+  }
   // Add references to legacy transport snapshots without rewriting audit/replay facts or descriptions.
   const names=[...new Set(rows.flatMap(({record})=>record.kind==='expense'?(record.items??[]).filter(item=>!item.masterId).map(item=>item.name):[]))];
   if (names.length) {
@@ -307,5 +324,7 @@ export async function recap(db:Db,from:string,to:string) {
     (SELECT COALESCE(sum(amount_rupiah),0)::text FROM receipts WHERE voided_at IS NULL AND received_date>=${from}::date AND received_date<${to}::date) AS received,
     (SELECT COALESCE(sum(i.amount_rupiah),0)::text FROM expense_entries e JOIN expense_items i ON i.expense_entry_id=e.id WHERE e.voided_at IS NULL AND e.business_date>=${from}::date AND e.business_date<${to}::date) AS expenses`.execute(db)).rows[0]!;
   const byChannel=(await sql<{channel:string;amount:string}>`SELECT channel,sum(net_amount_rupiah)::text AS amount FROM sales WHERE voided_at IS NULL AND business_date>=${from}::date AND business_date<${to}::date GROUP BY channel`.execute(db)).rows;
-  return {...result,cashDifference:(BigInt(result.received)-BigInt(result.expenses)).toString(),byChannel};
+  const gofoodTotal=byChannel.filter(row=>['gofood','gofood_mamat','gofood_gito'].includes(row.channel))
+    .reduce((sum,row)=>sum+BigInt(row.amount),0n).toString();
+  return {...result,cashDifference:(BigInt(result.received)-BigInt(result.expenses)).toString(),byChannel,gofoodTotal};
 }

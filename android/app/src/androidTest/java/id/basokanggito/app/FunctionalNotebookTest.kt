@@ -32,19 +32,85 @@ class FunctionalNotebookTest {
         compose.activityRule.scenario.onActivity { it.window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
     }
     private fun awaitText(text: String) { compose.waitUntil(10_000) { compose.onAllNodesWithText(text).fetchSemanticsNodes().isNotEmpty() } }
+    private fun assertSaleFieldOrder() {
+        val customer = compose.onNodeWithText("Customer (optional)").fetchSemanticsNode().boundsInRoot
+        val amount = compose.onNodeWithText("Sale amount").fetchSemanticsNode().boundsInRoot
+        val channel = compose.onNodeWithText("Sales channel").fetchSemanticsNode().boundsInRoot
+        Assert.assertTrue(customer.bottom <= amount.top)
+        Assert.assertTrue(amount.bottom <= channel.top)
+    }
     private fun screenshot(name: String) {
         // Keyboard actions belong to the form interactions, not a capture-only helper.
         compose.waitForIdle()
         val output = InstrumentationRegistry.getInstrumentation().uiAutomation.executeShellCommand("screencap -p /data/local/tmp/baso-functional-$name.png")
         android.os.ParcelFileDescriptor.AutoCloseInputStream(output).use { it.readBytes() }
     }
+    @Test fun journalSelectionOverridesParkedFormDatesAndResetPreservesActiveDraft() {
+        var reset by mutableStateOf("first-launch")
+        compose.setContent { BasoTheme { FunctionalNotebook(reset) } }
+        awaitText("Add sale")
+        compose.onNodeWithContentDescription(compose.activity.getString(R.string.previous_date)).performScrollTo().performClick()
+        compose.onNodeWithText("Add sale").performScrollTo().performClick()
+        compose.onNodeWithText("Sale amount").performTextInput("41000")
+        Espresso.closeSoftKeyboard()
+        compose.onNodeWithContentDescription(compose.activity.getString(R.string.previous_date)).performScrollTo().performClick()
+        compose.waitUntil(5_000) { runBlocking { app.repository.dao.meta("draft")?.let { JSONObject(it).getString("date") == businessToday().minusDays(2).toString() } == true } }
+        compose.runOnIdle { reset = "return-after-midnight" }
+        compose.waitForIdle()
+        compose.waitUntil(5_000) { runBlocking { app.repository.dao.meta("draft")?.let { JSONObject(it).getString("date") == businessToday().minusDays(2).toString() } == true } }
+        compose.onNodeWithText("41000").assertExists()
+        compose.onNodeWithContentDescription("Back").performClick()
+        compose.onNodeWithText("Add sale").performScrollTo().performClick()
+        compose.onNodeWithText("41000").assertExists()
+        compose.waitUntil(5_000) { runBlocking { app.repository.dao.meta("draft")?.let { JSONObject(it).getString("date") == businessToday().toString() } == true } }
+        compose.onNodeWithContentDescription("Back").performClick()
+        compose.onNodeWithContentDescription(compose.activity.getString(R.string.previous_date)).performScrollTo().performClick()
+        compose.onNodeWithText("Add shopping").performScrollTo().performClick()
+        compose.onNodeWithContentDescription("Item 1 amount").performTextInput("25000")
+        Espresso.closeSoftKeyboard()
+        compose.onNodeWithContentDescription("Back").performClick()
+        compose.onNodeWithContentDescription(compose.activity.getString(R.string.next_date)).performScrollTo().performClick()
+        compose.onNodeWithText("Add shopping").performScrollTo().performClick()
+        compose.onNodeWithText("25000").assertExists()
+        compose.waitUntil(5_000) { runBlocking { app.repository.dao.meta("draft")?.let { JSONObject(it).getString("date") == businessToday().toString() } == true } }
+    }
+
+    @Test fun authenticationSessionReturnsHomeButRecoversTheOriginalDatedDraft() {
+        var session by mutableStateOf("authenticated-1")
+        compose.setContent { BasoTheme { FunctionalNotebook(navigationSession = session) } }
+        awaitText("Add sale")
+        compose.onNodeWithContentDescription(compose.activity.getString(R.string.previous_date)).performClick()
+        compose.onNodeWithText("Add sale").performScrollTo().performClick()
+        compose.onNodeWithText("Sale amount").performTextInput("41000")
+        Espresso.closeSoftKeyboard()
+        compose.waitUntil(5_000) { runBlocking { app.repository.dao.meta("draft")?.let { JSONObject(it).getJSONObject("sale").getString("amount") == "41000" } == true } }
+        val draft = runBlocking { JSONObject(app.repository.dao.meta("draft")!!) }
+        compose.onNodeWithContentDescription("Back").performClick()
+        compose.onNodeWithText("Customers & Bon").performClick(); awaitText("Search name or phone")
+        compose.runOnIdle { session = "authenticated-1" }
+        compose.onNodeWithText("Search name or phone").assertExists()
+        compose.runOnIdle { session = "authenticated-2" }
+        awaitText("Add sale")
+        compose.onAllNodesWithText("Search name or phone").assertCountEquals(0)
+        compose.onNodeWithText("Continue unfinished entry").performClick()
+        awaitText("Sale amount"); compose.onNodeWithText("41000").assertExists()
+        val restored = runBlocking { JSONObject(app.repository.dao.meta("draft")!!) }
+        Assert.assertEquals(draft.getString("id"), restored.getString("id"))
+        Assert.assertEquals(draft.getString("date"), restored.getString("date"))
+        Assert.assertTrue(runBlocking { app.repository.dao.records().isEmpty() })
+    }
+
     @Test fun paidAndUnpaidSalesShoppingAndCorrectionUseRealRoomRecords() {
         runBlocking { app.repository.submitCustomer(newId(), 0, JSONObject().put("name", "Room Bon customer")) }
+        runBlocking {
+            for (name in listOf("Daging", "Bumbu")) app.repository.submitCatalog(shoppingMasterId(name), 0, JSONObject().put("name", name))
+        }
         ActivityScenario.launch(MainActivity::class.java).use { scenario ->
             compose.unlockNotebookFixture()
             scenario.onActivity { it.window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
             awaitText("Add sale")
             compose.onNodeWithText("Add sale").performScrollTo().performClick()
+            assertSaleFieldOrder()
             compose.onNodeWithText("Sale amount").performTextInput("25000")
             compose.onNodeWithText("Customer (optional)").performScrollTo().performTextInput("Room UI test")
             Espresso.closeSoftKeyboard(); compose.onNodeWithText("Save").performClick()
@@ -54,6 +120,7 @@ class FunctionalNotebookTest {
             Assert.assertEquals(25000L, paid.received)
             screenshot("paid-detail")
             compose.onNodeWithText("Edit entry").performScrollTo().performClick()
+            assertSaleFieldOrder()
             compose.onNodeWithText("Sale amount").performTextClearance(); compose.onNodeWithText("Sale amount").performTextInput("30000")
             Espresso.closeSoftKeyboard(); compose.onNodeWithText("General customer").performScrollTo().performClick()
             awaitText("Room Bon customer"); compose.onNodeWithText("Room Bon customer").performClick()
@@ -72,10 +139,12 @@ class FunctionalNotebookTest {
             Assert.assertTrue(runBlocking { app.repository.dao.records().map { BookRecord.parse(JSONObject(it.payload)) }.any { it.amount == 40000L && it.receipts.isEmpty() } })
             compose.onNodeWithContentDescription("Back").performClick()
             compose.onNodeWithText("Add shopping").performScrollTo().performClick()
-            compose.onNodeWithContentDescription("Item 1 name").performTextInput("Daging")
+            compose.onNodeWithText(InstrumentationRegistry.getInstrumentation().targetContext.getString(R.string.catalog_select_item)).performScrollTo().performClick()
+            awaitText("Daging"); compose.onNodeWithText("Daging").performClick()
             compose.onNodeWithContentDescription("Item 1 amount").performTextInput("150000")
             Espresso.closeSoftKeyboard(); compose.onNodeWithText("Add item").performScrollTo().performClick()
-            compose.onNodeWithContentDescription("Item 2 name").performTextInput("Bumbu")
+            compose.onNodeWithText(InstrumentationRegistry.getInstrumentation().targetContext.getString(R.string.catalog_select_item)).performScrollTo().performClick()
+            awaitText("Bumbu"); compose.onNodeWithText("Bumbu").performClick()
             compose.onNodeWithContentDescription("Item 2 amount").performTextInput("25000")
             Espresso.closeSoftKeyboard(); screenshot("shopping")
             compose.onNodeWithText("Save").performClick(); awaitText("Edit entry")

@@ -82,7 +82,7 @@ fun EntryInput(
 
 internal fun channelIcon(channel: String): Int = when (channel) {
     "Langsung" -> R.drawable.ic_store
-    "GoFood" -> R.drawable.ic_meal
+    "GoFood", "GoFood - Mamat", "GoFood - Gito" -> R.drawable.ic_meal
     "GrabFood" -> R.drawable.ic_delivery
     "ShopeeFood" -> R.drawable.ic_shopping
     else -> R.drawable.ic_delivery

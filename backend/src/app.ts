@@ -4,14 +4,16 @@ import type { Database } from './database.js';
 import { FinancialError } from './bookkeeping.js';
 import { registerBookkeeping } from './bookkeeping-routes.js';
 import { AccessError, registerDeviceAccess } from './device-access.js';
+import { readReleasePolicy, registerVersionPolicy, type ReleasePolicy } from './version-policy.js';
 
-export function buildApp(checkDatabase: () => Promise<unknown>, logger = false, bookkeeping?: {db:Kysely<Database>}) {
+export function buildApp(checkDatabase: () => Promise<unknown>, logger = false, bookkeeping?: {db:Kysely<Database>}, loadPolicy:()=>Promise<ReleasePolicy> = readReleasePolicy) {
   const app = Fastify({
     logger: logger ? {
       redact: ['req.headers.authorization', 'req.headers.cookie'],
       serializers: { req: (request: { method: string }) => ({ method: request.method }) },
     } : false,
   });
+  registerVersionPolicy(app,loadPolicy);
 
   app.get('/health', async (request, reply) => {
     reply.header('Cache-Control', 'no-store');

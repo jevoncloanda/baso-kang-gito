@@ -87,7 +87,7 @@ test('custom PostgreSQL backup restores financial records, audit, migrations and
     const restored = connect(target);
     try {
       assert.deepEqual(await recap(restored, '2026-10-31', '2026-11-01'), {
-        sales: '200000', received: '140000', expenses: '30000', cashDifference: '110000',
+        sales: '200000', received: '140000', expenses: '30000', cashDifference: '110000', gofoodTotal: '0',
         byChannel: [{ channel: 'langsung', amount: '200000' }],
       });
       assert.equal((await record(restored, sale.recordId))?.receipts?.length, 1);

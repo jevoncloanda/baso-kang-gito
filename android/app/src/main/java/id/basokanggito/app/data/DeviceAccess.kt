@@ -124,7 +124,9 @@ class DeviceAccess(private val context: Context) {
     fun client(): NotebookHttpClient {
         val token = store.read().getString("credential")
         return NotebookHttpClient(id.basokanggito.app.BuildConfig.SYNC_URL, token) { status, result ->
-            if (status == 401 || result.optString("error") == "access_revoked") {
+            if (status == 426) {
+                kotlinx.coroutines.runBlocking { (context.applicationContext as NotebookApplication).repository.saveCompatibilityPolicy(result.getJSONObject("policy")) }
+            } else if (status == 401 || result.optString("error") == "access_revoked") {
                 store.update { if (it.optString("credential") == token) it.put("blocked", true) }; refresh()
             }
         }
@@ -167,7 +169,7 @@ class DeviceAccess(private val context: Context) {
         refresh()
     }
     fun restartEnrollment() { store.write(JSONObject()); refresh() }
-    fun ready() { store.update { it.put("ready", true) }; refresh(); scheduleSync(context) }
+    fun ready() { store.update { it.put("ready", true) }; refresh(); scheduleSync(context, forceCompatibility = true) }
 }
 
 class AccessViewModel(application: Application) : AndroidViewModel(application) {
@@ -177,21 +179,44 @@ class AccessViewModel(application: Application) : AndroidViewModel(application) 
     val error = MutableStateFlow("")
     val delay = MutableStateFlow(0L)
     private var backgroundAt: Long? = null
+    private var backgroundDate = ""
+    val journalReset = MutableStateFlow(UUID.randomUUID().toString())
+    val navigationSession = MutableStateFlow("")
     val covered = MutableStateFlow(false)
-    fun background() { if (backgroundAt == null) backgroundAt = SystemClock.elapsedRealtime(); covered.value = true }
-    fun foreground() { if (backgroundAt?.let { SystemClock.elapsedRealtime() - it >= 30_000 } == true) unlocked.value = false; backgroundAt = null; covered.value = false }
+    fun background() {
+        if (backgroundAt == null) { backgroundAt = SystemClock.elapsedRealtime(); backgroundDate = businessToday().toString() }
+        covered.value = true
+    }
+    fun foreground() {
+        val now = SystemClock.elapsedRealtime()
+        backgroundAt?.let {
+            if (pinSessionExpired(it, now)) unlocked.value = false
+            if (resetJournalOnReturn(it, now, backgroundDate, businessToday().toString())) journalReset.value = UUID.randomUUID().toString()
+            scheduleSync(getApplication(), forceCompatibility = true)
+        }
+        backgroundAt = null; covered.value = false
+    }
     fun run(action: suspend () -> Unit) {
         if (busy.value) return
         busy.value = true; error.value = ""
         viewModelScope.launch {
             try { withContext(Dispatchers.IO) { action() }; access.refresh() }
+            catch (update: AppUpdateRequired) {
+                (getApplication<Application>() as NotebookApplication).repository.saveCompatibilityPolicy(update.policy)
+                error.value = "app_update_required"
+            }
             catch (_: java.io.IOException) { error.value = "access_connection" }
             catch (failure: Exception) { error.value = failure.message?.takeIf { it in setOf("pin_format", "pin_confirmation", "pin_incorrect", "pin_delayed", "access_expired", "access_rate", "device_name", "last_administrator", "incorrect_pairing_code", "enrollment_unavailable", "too_many_attempts") } ?: "access_failed" }
             finally { access.refresh(); delay.value = runCatching { access.store.delaySeconds() }.getOrDefault(0); busy.value = false }
         }
     }
-    fun unlock(pin: String) = run { require(access.store.verify(pin)) { "pin_incorrect" }; unlocked.value = true; scheduleSync(getApplication()) }
-    fun setup(pin: String, confirmation: String) = run { access.store.setPin(pin, confirmation); unlocked.value = true; scheduleSync(getApplication()) }
+    private fun authenticated() {
+        val session = UUID.randomUUID().toString()
+        navigationSession.value = session; journalReset.value = session; unlocked.value = true
+        scheduleSync(getApplication(), forceCompatibility = true)
+    }
+    fun unlock(pin: String) = run { require(access.store.verify(pin)) { "pin_incorrect" }; authenticated() }
+    fun setup(pin: String, confirmation: String) = run { access.store.setPin(pin, confirmation); authenticated() }
     fun change(old: String, pin: String, confirmation: String, complete: () -> Unit) = run {
         require(access.store.verify(old)) { "pin_incorrect" }; access.store.setPin(pin, confirmation); complete()
     }

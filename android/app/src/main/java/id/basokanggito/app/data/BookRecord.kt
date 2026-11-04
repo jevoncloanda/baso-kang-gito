@@ -14,7 +14,7 @@ fun validDate(value: String): String = value.also { require(LocalDate.parse(it).
 fun validId(value: String): String = value.also { require(UUID.fromString(it).toString() == it) }
 fun amount(value: String): Long = value.also { require(it.matches(Regex("[1-9][0-9]{0,11}"))) }.toLong().also { require(it <= MaxAmount) }
 fun newId(): String = UUID.randomUUID().toString()
-val ChannelCodes = listOf("langsung", "gofood", "grabfood", "shopeefood")
+val ChannelCodes = listOf("langsung", "gofood", "grabfood", "shopeefood", "gofood_mamat", "gofood_gito")
 
 data class Payment(val id: String, val date: String, val amount: Long, val method: String, val voided: Boolean = false, val createdAt: String = Instant.EPOCH.toString()) {
     fun json() = JSONObject().put("id", id).put("date", date).put("amount", amount.toString()).put("method", method).put("voided", voided).put("createdAt", createdAt)
@@ -28,6 +28,7 @@ data class BookRecord(
     val receipts: List<Payment> = emptyList(), val items: List<ShoppingItem> = emptyList(),
     val createdAt: String = Instant.EPOCH.toString(),
     val customerId: String? = null,
+    val initialReceiptId: String? = null,
 ) {
     val received: Long get() = receipts.filterNot { it.voided }.fold(0L) { sum, p -> Math.addExact(sum, p.amount) }
     fun withKnownChronology(previous: BookRecord?): BookRecord {
@@ -35,6 +36,7 @@ data class BookRecord(
         val unknown = Instant.EPOCH.toString()
         val knownReceipts = previous.receipts.associateBy { it.id }
         return copy(createdAt = if (createdAt == unknown) previous.createdAt else createdAt,
+            initialReceiptId = initialReceiptId ?: previous.initialReceiptId,
             receipts = receipts.map { payment ->
                 val known = knownReceipts[payment.id]
                 if (payment.createdAt == unknown && known != null) payment.copy(createdAt = known.createdAt) else payment
@@ -47,6 +49,7 @@ data class BookRecord(
                 .put("entryKind", if (channel == "langsung") "individual" else "daily_aggregate")
                 .put("receipts", JSONArray(receipts.map { it.json() }))
             else put("items", JSONArray(items.map { it.json() }))
+            initialReceiptId?.let { put("initialReceiptId", it) }
         }
     companion object {
         fun parse(json: JSONObject): BookRecord {
@@ -62,7 +65,8 @@ data class BookRecord(
             else { amount(json.getString("amount")); require(json.getString("channel") in ChannelCodes) }
             return BookRecord(validId(json.getString("id")), kind, validDate(json.getString("date")), json.getInt("version").also { require(it > 0) }, total,
                 json.optString("channel"), json.optString("customer"), json.getString("note"), json.getBoolean("voided"), receipts, items, timestamp(json),
-                if (json.isNull("customerId")) null else validId(json.getString("customerId")))
+                if (json.isNull("customerId")) null else validId(json.getString("customerId")),
+                if (json.isNull("initialReceiptId")) null else validId(json.getString("initialReceiptId")))
         }
     }
 }
@@ -112,7 +116,8 @@ fun applyLocally(op: JSONObject, before: BookRecord?): BookRecord {
                 data.getString("method").also { require(it in listOf("cash", "transfer")) }, createdAt = now)) else emptyList()
             BookRecord(id, "sale", validDate(data.getString("date")), version + 1, value, channel,
                 if (before != null && customerId != null && customerId == before.customerId) before.customer else data.optString("customer").trim().also { require(it.length <= 200) },
-                data.optString("note").trim().also { require(it.length <= 1000) }, receipts = payments, createdAt = before?.createdAt ?: now, customerId = customerId)
+                data.optString("note").trim().also { require(it.length <= 1000) }, receipts = payments, createdAt = before?.createdAt ?: now, customerId = customerId,
+                initialReceiptId = before?.initialReceiptId ?: if (before == null) payments.firstOrNull()?.id else null)
         }
         "save_expense" -> {
             require(before == null || before.kind == "expense")

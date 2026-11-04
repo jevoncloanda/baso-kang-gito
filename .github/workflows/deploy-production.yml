@@ -9,6 +9,7 @@ on:
       - "backend/**"
       - "compose.yaml"
       - "compose.production.yaml"
+      - "compose.releases.yaml"
       - ".github/workflows/deploy-production.yml"
   workflow_dispatch:
 
@@ -85,11 +86,15 @@ jobs:
           git switch main
           git merge --ff-only "$DEPLOY_SHA"
 
+          test -f compose.releases.yaml
+          test -r /srv/baso-kang-gito-release-state/current/policy.json
+
           echo "Validating Docker Compose"
 
           docker compose \
             -f compose.yaml \
             -f compose.production.yaml \
+            -f compose.releases.yaml \
             config --quiet
 
           echo "Deploying containers"
@@ -97,6 +102,7 @@ jobs:
           docker compose \
             -f compose.yaml \
             -f compose.production.yaml \
+            -f compose.releases.yaml \
             up -d --build --wait --wait-timeout 120
 
           echo "Production status"
@@ -104,6 +110,7 @@ jobs:
           docker compose \
             -f compose.yaml \
             -f compose.production.yaml \
+            -f compose.releases.yaml \
             ps
 
           echo "Deployed commit:"

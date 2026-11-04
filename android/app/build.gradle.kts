@@ -1,5 +1,6 @@
 import java.util.Properties
 import java.net.URI
+import groovy.json.JsonSlurper
 
 plugins {
     id("com.android.application")
@@ -12,6 +13,9 @@ val localConfig = Properties().apply {
 }
 
 ksp { arg("room.schemaLocation", "$projectDir/schemas") }
+val productionPin = JsonSlurper().parse(rootProject.file("production-signing.json")) as Map<*, *>
+val updateCertificate = productionPin["certificateSha256"] as String
+require(productionPin["packageId"] == "id.basokanggito.app" && updateCertificate.matches(Regex("[a-f0-9]{64}"))) { "Invalid public production certificate pin" }
 
 android {
     namespace = "id.basokanggito.app"
@@ -21,12 +25,13 @@ android {
         applicationId = "id.basokanggito.app"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.0.1"
+        versionCode = 2
+        versionName = "0.0.2"
+        buildConfigField("String", "UPDATE_CERTIFICATE_SHA256", "\"$updateCertificate\"")
         testInstrumentationRunner = "id.basokanggito.app.NotebookTestRunner"
     }
 
-    buildFeatures { compose = true; buildConfig = true }
+    buildFeatures { compose = true; buildConfig = true; resValues = true }
 
     signingConfigs {
         create("production") {
@@ -39,11 +44,14 @@ android {
 
     buildTypes {
         getByName("debug") {
+            applicationIdSuffix = ".debug"
+            resValue("string", "application_label", "Baso Kang Gito DEV")
             buildConfigField("String", "SYNC_URL", "\"http://127.0.0.1:3000\"")
             // Legacy value is validation-helper control only; never authenticates financial routes.
             buildConfigField("String", "SYNC_TOKEN", "\"\"")
         }
         getByName("release") {
+            resValue("string", "application_label", "Baso Kang Gito")
             signingConfig = signingConfigs.getByName("production")
             val apiUrl = localConfig.getProperty("bookkeeping.apiUrl", "")
             val endpoint = runCatching { URI(apiUrl) }.getOrNull()
@@ -56,6 +64,7 @@ android {
             initWith(getByName("debug"))
             // Separate from older validation APKs signed on another development host.
             applicationIdSuffix = ".access.validation"
+            resValue("string", "application_label", "Baso Kang Gito")
             matchingFallbacks += "debug"
             buildConfigField("String", "SYNC_URL", "\"http://127.0.0.1:3001\"")
             val controlToken = localConfig.getProperty("bookkeeping.devToken", "")
@@ -84,6 +93,8 @@ androidComponents {
 }
 
 dependencies {
+    // Cryptographically verify APK signatures before handing an update to Android.
+    implementation("com.android.tools.build:apksig:9.0.1")
     implementation(platform("androidx.compose:compose-bom:2026.02.00"))
     implementation("androidx.activity:activity-compose:1.12.4")
     implementation("androidx.compose.material3:material3")
@@ -99,4 +110,8 @@ dependencies {
     // Compose's transitive Espresso 3.5.0 uses an InputManager method absent on Android 17.
     androidTestImplementation("androidx.test.espresso:espresso-core:3.7.0")
     add("validationImplementation", "androidx.compose.ui:ui-test-manifest")
+}
+
+tasks.withType<Test>().configureEach {
+    providers.gradleProperty("apkFixture").orNull?.let { systemProperty("bkg.apkFixture", it) }
 }

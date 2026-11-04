@@ -10,9 +10,42 @@ info:
     Optional createdAt values are immutable server creation timestamps for presentation,
     separate from business dates and commit-order sync cursors. Offline clients may use
     provisional local timestamps until first synchronization, so presentation order may change then.
+    Coordinated GoFood rollout: install the updated APK on every device before using gofood_mamat or
+    gofood_gito. Strict older APKs reject those values. Historical gofood remains legacy/unassigned;
+    the server never maps an account-specific channel back to generic GoFood.
+    Android clients send X-App-Version-Code (positive Android versionCode) and X-App-Variant
+    (release/debug/validation). These headers never replace installation authorization. All /v1
+    financial and device routes are checked before mutation, including reads used by strict sync parsers.
+    Below-minimum requests return HTTP 426 APP_UPDATE_REQUIRED with the effective public policy.
+    Missing version headers remain accepted while allowMissingVersion=true; after the explicit
+    coordinated activation they also receive 426. Discovery and download redirects remain public.
 servers:
   - url: http://127.0.0.1:3000
 paths:
+  /v1/app-version:
+    get:
+      operationId: getAppCompatibility
+      summary: Read the authoritative APK release and compatibility policy before synchronization
+      security: []
+      parameters:
+        - {name: X-App-Version-Code, in: header, schema: {type: integer, minimum: 1, maximum: 2147483647}}
+      responses:
+        '200':
+          description: No-store public metadata. A null downloadUrl means no verified APK is published. status is current, available, recommended or required for the supplied version.
+          content: {application/json: {schema: {$ref: '#/components/schemas/AppVersionPolicy'}}}
+        '400': {description: INVALID_APP_VERSION for malformed numeric headers.}
+        '503': {description: VERSION_POLICY_UNAVAILABLE; no financial write may proceed with an unreadable policy.}
+  /v1/app-download:
+    get:
+      operationId: downloadLatestApk
+      summary: Redirect to the verified immutable production APK
+      security: []
+      responses:
+        '302':
+          description: No-store redirect after a verified artifact has been published.
+          headers: {Location: {schema: {type: string, format: uri}}}
+        '404': {description: NO_RELEASE_AVAILABLE; no placeholder, unsigned, debug or validation APK is offered.}
+        '503': {description: VERSION_POLICY_UNAVAILABLE.}
   /health:
     get:
       operationId: getHealth
@@ -129,6 +162,7 @@ paths:
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/AccessForbidden'}
         '429': {$ref: '#/components/responses/AccessLimited'}
+        '426': {$ref: '#/components/responses/AppUpdateRequired'}
         '409': {$ref: '#/components/responses/Conflict'}
         '422': {$ref: '#/components/responses/Invalid'}
         '500': {$ref: '#/components/responses/Retryable'}
@@ -171,6 +205,7 @@ paths:
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/AccessForbidden'}
         '429': {$ref: '#/components/responses/AccessLimited'}
+        '426': {$ref: '#/components/responses/AppUpdateRequired'}
   /v1/customers:
     get:
       operationId: listCustomers
@@ -201,6 +236,7 @@ paths:
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/AccessForbidden'}
         '429': {$ref: '#/components/responses/AccessLimited'}
+        '426': {$ref: '#/components/responses/AppUpdateRequired'}
   /v1/customers/{id}:
     get:
       operationId: getCustomerHistory
@@ -227,6 +263,7 @@ paths:
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/AccessForbidden'}
         '429': {$ref: '#/components/responses/AccessLimited'}
+        '426': {$ref: '#/components/responses/AppUpdateRequired'}
         '404': {$ref: '#/components/responses/Invalid'}
   /v1/records/{id}:
     get:
@@ -241,6 +278,7 @@ paths:
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/AccessForbidden'}
         '429': {$ref: '#/components/responses/AccessLimited'}
+        '426': {$ref: '#/components/responses/AppUpdateRequired'}
         '404': {$ref: '#/components/responses/Invalid'}
   /v1/daily:
     get:
@@ -266,6 +304,7 @@ paths:
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/AccessForbidden'}
         '429': {$ref: '#/components/responses/AccessLimited'}
+        '426': {$ref: '#/components/responses/AppUpdateRequired'}
   /v1/monthly:
     get:
       operationId: getMonthlyRecap
@@ -295,6 +334,7 @@ paths:
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/AccessForbidden'}
         '429': {$ref: '#/components/responses/AccessLimited'}
+        '426': {$ref: '#/components/responses/AppUpdateRequired'}
   /v1/shopping-items:
     get:
       operationId: getShoppingCatalog
@@ -326,6 +366,7 @@ paths:
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/AccessForbidden'}
         '429': {$ref: '#/components/responses/AccessLimited'}
+        '426': {$ref: '#/components/responses/AppUpdateRequired'}
   /v1/access/bootstrap:
     post:
       operationId: bootstrapAdministrator
@@ -353,6 +394,7 @@ paths:
         '401': {$ref: '#/components/responses/Unauthorized'}
         '409': {$ref: '#/components/responses/Conflict'}
         '429': {$ref: '#/components/responses/AccessLimited'}
+        '426': {$ref: '#/components/responses/AppUpdateRequired'}
   /v1/access/enrollments:
     post:
       operationId: requestDeviceEnrollment
@@ -379,6 +421,7 @@ paths:
         '401': {$ref: '#/components/responses/Unauthorized'}
         '409': {$ref: '#/components/responses/Conflict'}
         '429': {$ref: '#/components/responses/AccessLimited'}
+        '426': {$ref: '#/components/responses/AppUpdateRequired'}
   /v1/access/enrollment/status:
     post:
       operationId: checkDeviceEnrollment
@@ -389,6 +432,7 @@ paths:
         '200': {$ref: '#/components/responses/EnrollmentStatus'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '429': {$ref: '#/components/responses/AccessLimited'}
+        '426': {$ref: '#/components/responses/AppUpdateRequired'}
   /v1/access/enrollment/complete:
     post:
       operationId: completeDeviceEnrollment
@@ -404,6 +448,7 @@ paths:
         '403': {$ref: '#/components/responses/AccessForbidden'}
         '409': {$ref: '#/components/responses/Conflict'}
         '429': {$ref: '#/components/responses/AccessLimited'}
+        '426': {$ref: '#/components/responses/AppUpdateRequired'}
   /v1/access/me:
     get:
       operationId: verifyDeviceAccess
@@ -424,6 +469,7 @@ paths:
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/AccessForbidden'}
         '429': {$ref: '#/components/responses/AccessLimited'}
+        '426': {$ref: '#/components/responses/AppUpdateRequired'}
   /v1/access/devices:
     get:
       operationId: listDeviceAccess
@@ -439,6 +485,7 @@ paths:
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/AccessForbidden'}
         '429': {$ref: '#/components/responses/AccessLimited'}
+        '426': {$ref: '#/components/responses/AppUpdateRequired'}
   /v1/access/enrollments/{id}/decision:
     post:
       operationId: decideDeviceEnrollment
@@ -467,6 +514,7 @@ paths:
         '403': {$ref: '#/components/responses/AccessForbidden'}
         '409': {$ref: '#/components/responses/Conflict'}
         '429': {$ref: '#/components/responses/AccessLimited'}
+        '426': {$ref: '#/components/responses/AppUpdateRequired'}
   /v1/access/devices/{id}/revoke:
     post:
       operationId: revokeDeviceAccess
@@ -486,6 +534,7 @@ paths:
         '404': {$ref: '#/components/responses/Invalid'}
         '409': {$ref: '#/components/responses/Conflict'}
         '429': {$ref: '#/components/responses/AccessLimited'}
+        '426': {$ref: '#/components/responses/AppUpdateRequired'}
 components:
   securitySchemes:
     deviceToken:
@@ -496,6 +545,16 @@ components:
         access financial routes; administrators manage devices. Server stores SHA-256 verifiers.
         No shared development-token fallback. Enrollment endpoints accept provisional proof only.
   responses:
+    AppUpdateRequired:
+      description: APP_UPDATE_REQUIRED. Do not retry financial uploads until compatibility is rechecked or the APK is updated. Keep local records, drafts, original operation IDs and pending queue states.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [error, policy]
+            properties:
+              error: {type: string, enum: [APP_UPDATE_REQUIRED]}
+              policy: {$ref: '#/components/schemas/AppVersionPolicy'}
     AccessForbidden:
       description: 'access_revoked or administrator_required. Stop financial sync on access_revoked; preserve local money, drafts and pending operations.'
       content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}
@@ -528,6 +587,22 @@ components:
       description: Unexpected server failure. Retry the identical operation ID/body with backoff; a prior commit may have succeeded.
       content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}
   schemas:
+    AppVersionPolicy:
+      type: object
+      required: [latestVersionCode, latestVersionName, minimumSupportedVersionCode, recommendedVersionCode, allowMissingVersion, downloadPageUrl, releaseDate, downloadUrl, sha256, releaseNotes, mandatoryUpdateMessage]
+      properties:
+        latestVersionCode: {type: integer, minimum: 1}
+        latestVersionName: {type: string}
+        minimumSupportedVersionCode: {type: integer, minimum: 1}
+        recommendedVersionCode: {type: integer, minimum: 1}
+        allowMissingVersion: {type: boolean}
+        downloadPageUrl: {type: string, enum: ['https://basokanggito.jevoncl.com']}
+        releaseDate: {type: string, format: date, nullable: true}
+        downloadUrl: {type: string, format: uri, nullable: true}
+        sha256: {type: string, nullable: true, pattern: '^[a-f0-9]{64}$'}
+        releaseNotes: {type: array, maxItems: 20, items: {type: string, maxLength: 500}}
+        mandatoryUpdateMessage: {type: string, maxLength: 1000}
+        status: {type: string, enum: [current, available, recommended, required]}
     Amount: {type: string, pattern: '^[1-9][0-9]{0,11}$', description: 'Positive whole rupiah, at most 999999999999 per sale/item/receipt. Totals may be larger.'}
     Error:
       type: object
@@ -586,7 +661,7 @@ components:
             date: {type: string, format: date}
             catalogVersion: {type: integer, enum: [1]}
             unit: {type: string, maxLength: 50}
-            channel: {type: string, enum: [langsung, gofood, grabfood, shopeefood]}
+            channel: {type: string, enum: [langsung, gofood, grabfood, shopeefood, gofood_mamat, gofood_gito]}
             amount: {$ref: '#/components/schemas/Amount'}
             customer: {type: string, maxLength: 200}
             customerId: {type: string, format: uuid, nullable: true}
@@ -627,7 +702,8 @@ components:
         amount: {type: string, pattern: '^[0-9]+$'}
         note: {type: string}
         voided: {type: boolean}
-        channel: {type: string, enum: [langsung, gofood, grabfood, shopeefood]}
+        channel: {type: string, enum: [langsung, gofood, grabfood, shopeefood, gofood_mamat, gofood_gito]}
+        initialReceiptId: {type: string, format: uuid, description: Optional ID of the receipt created atomically with the sale, derived from its creation revision. Presentation metadata only; later payments never acquire this relationship.}
         origin: {type: string, enum: [manual, pos]}
         entryKind: {type: string, enum: [individual, daily_aggregate]}
         customer: {type: string}
@@ -654,6 +730,7 @@ components:
         sales: {type: string}
         received: {type: string}
         expenses: {type: string}
+        gofoodTotal: {type: string, description: Combined legacy/unassigned, Mamat and Gito sales; already included in sales.}
         cashDifference: {type: string, description: Dated receipts minus paid shopping; not profit or a cash balance.}
         byChannel:
           type: array

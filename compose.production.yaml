@@ -2,6 +2,7 @@
 # Run with: docker compose -f compose.yaml -f compose.production.yaml up -d --build
 services:
   db:
+    ports: !reset []
     restart: unless-stopped
     logging:
       driver: json-file

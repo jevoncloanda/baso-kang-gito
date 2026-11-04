@@ -177,7 +177,7 @@ In another terminal from `backend/`, with Node 22 and dependencies installed:
 node --env-file=../.env --import tsx test/device-server.ts
 ```
 
-This helper listens only on `127.0.0.1:3001` and creates its own `device_test_*` schema. Tests block every acknowledgment for a selected record until explicitly released, so automatic HTTP retries cannot bypass the lost-response proof. It does not seed the main ledger. With `--container` it listens on the container interface; publish that port only with `127.0.0.1:3001:3001`. From the root:
+This helper listens only on `127.0.0.1:3001` and creates its own `device_test_*` schema. If host port 3001 is occupied, set `VALIDATION_API_PORT=3002` for both start and shutdown, and use `adb -s <device> reverse tcp:3001 tcp:3002`; the validation APK keeps its existing URL. Tests block every acknowledgment for a selected record until explicitly released, so automatic HTTP retries cannot bypass the lost-response proof. It does not seed the main ledger. With `--container` it listens on the container interface; publish that port only with `127.0.0.1:3001:3001`. From the root:
 
 ```powershell
 adb reverse tcp:3001 tcp:3001
@@ -290,3 +290,56 @@ The backup drill restored synthetic sales, receipts, expenses, corrections, audi
 Remaining rollout work: reviewed encrypted Android export/restore, protected off-computer backup retention and restore drills, handling post-backup client state, Xiaomi/TalkBack/parent acceptance, and production authentication/device ownership before remote use. Reboot, prolonged outages, Doze/battery restrictions and execution at exact WorkManager retry intervals remain unverified. WorkManager request persistence was tested across process stop; it is not a guarantee of background timing. Release sync remains disabled. The original design document's introduction is historical; use its financial invariants/acceptance criteria alongside these actual results.
 
 No new business features, production deployment, dependency upgrades, commits or pushes are part of Milestone 1.1.
+# APK distribution and compatibility
+
+Production uses the existing Caddy virtual host at `basokanggito.jevoncl.com`, serving `/srv/baso-kang-gito-downloads/`. DNS and HTTPS are already configured. The API remains `basokanggito-api.jevoncl.com`. No publisher changes Caddy, DNS, the database, or device enrollment.
+
+On the private signing machine, run `npm --prefix backend run build`, then `node backend/scripts/release.mjs init`. Pin a read-only copy of the APK from a known installed production device with `node backend/scripts/release.mjs pin <production-reference.apk>`. This stores only its public certificate fingerprint in `android/production-signing.json`; keep the APK and signing material outside Git/public files.
+
+`node backend/scripts/release.mjs prepare` builds/signs with the existing Gradle configuration and creates a private candidate in ignored `.releases/private/`. Signing stays on Windows; no keystore or private key is uploaded. `release.mjs publish` and `set-minimum` remain **local-preview-only** commands; they do not publish to Cloudra.
+
+From the repository root, prepare an approved JSON array of 1-20 short Indonesian notes, then run this **local-only dry run**:
+
+```powershell
+.\backend\scripts\Publish-Cloudra.ps1 -SshHost cloudra-baso -NotesFile .releases\private\notes-id.json -Candidate .releases\private\candidate-2-e696b3084536.apk
+```
+
+`cloudra-baso` is an operator-configured SSH alias, not a repository credential. Windows needs Node 22/npm dependencies, Java, the existing Android SDK/signing configuration, PowerShell, and OpenSSH `ssh`/`scp`. The host key must already be verified in `known_hosts`, and the deployment user's key must already work with `BatchMode=yes`. The script never disables host-key checking. Use `-Build` instead of `-Candidate` to explicitly build a new signed candidate. Append **`-Publish` only after approval** to connect, upload, activate, and verify public metadata/APK/website checksums. Dry run does not contact SSH or public production URLs. The script validates the APK against actual Gradle version metadata and the pinned production certificate; a dirty checkout is allowed so existing work is never reset.
+
+One-time **operator-approved** Cloudra preparation (not performed by the publisher): provision Python 3, a deployment user, and a real `/srv/baso-kang-gito-release-state` directory on one filesystem. Give that user ownership/write access to `artifacts/`, `staging/`, `generations/`, `current`, and `publish.lock`. Caddy needs only directory traversal/read permissions (directories 0755, public files 0644); releases need no sudo or Caddy-service ownership. Preserve the current placeholder and initialize this layout using the **currently active approved policy**, not a newly reset policy:
+
+```text
+/srv/baso-kang-gito-downloads -> /srv/baso-kang-gito-release-state/current/public
+/srv/baso-kang-gito-release-state/
+  production-signing.json       # public certificate pin only; copy from android/
+  current -> generations/bootstrap
+  artifacts/                   # immutable APKs, never pruned by publisher
+  staging/                     # private uploads and recovery receipts
+  generations/bootstrap/
+    policy.json                # copy the currently active policy
+    public/                    # copy existing placeholder here
+      version.json -> ../policy.json
+      releases -> ../../../artifacts
+```
+
+For initial setup, create/copy the complete bootstrap tree first, verify its policy matches the API, then rename the existing public directory to a preserved sibling backup and replace it with the shown symlink. Do not overwrite an existing release state or backup. Ensure Caddy can read through the symlink. For the next approved backend deployment, add `-f compose.releases.yaml` after `compose.production.yaml` using the existing production project/environment; the read-only bind mounts the **state directory** and reads `/releases/current/policy.json`. `APK_RELEASE_STATE_DIR` can override the host state path (also pass the matching `/srv/<name>` as `-RemoteState` to the Windows publisher). Keep the database unexposed. Git deployments only mount this external state; they never publish APKs.
+
+Each approved upload is checked against the remote certificate pin and APK/asset checksums. A lock serializes publishers. The completed APK is hard-linked into `artifacts/` without replacement; a complete generation holds the three website assets, policy, `version.json` pointing to that same policy, and `latest.apk` pointing to the immutable APK. A single atomic `current` rename activates website and backend metadata last. Old generations/APKs remain. Identical published artifacts are idempotent; downgrades and version reuse with different bytes/identity fail. Keep staging receipts until verification is complete; cleanup is manual and must never remove an active generation or referenced artifact.
+
+Public verification requires Caddy/Cloudflare to serve `/version.json` with `Cache-Control: no-store`, versioned APKs with immutable caching and `application/vnd.android.package-archive`, and assets without stale cache rules. `/latest.apk` should not be cached. These are operator checks on the existing configuration; the publisher does not edit it. A public verification failure requests rollback using the upload receipt; rollback refuses to replace a newer concurrent release. If SSH disconnects, retry the reported receipt's rollback command:
+
+```sh
+python3 <upload>/publish-cloudra.py rollback --state-root /srv/baso-kang-gito-release-state --stage <upload>
+```
+
+Publishing preserves minimum 1 / `allowMissingVersion=true` during rollout and never raises either setting. Only after **every** family device has upgraded and synced, an operator may separately run the following on Cloudra using an approved uploaded script; it creates a recoverable policy generation under the same lock. Verify `/version.json` and `/v1/app-version` afterward and retain the returned receipt for rollback:
+
+```sh
+python3 <approved-upload>/publish-cloudra.py set-minimum --state-root /srv/baso-kang-gito-release-state --minimum 2 --reject-missing
+```
+
+Keep the coordinated GoFood restriction until every reader understands both account channels. No financial data is reset on compatibility failure.
+
+The optional Nginx container remains **local development only**: `docker compose --env-file .env.dev -p baso-kang-gito-dev -f compose.yaml -f compose.distribution.yaml up -d --build` serves loopback 8081. Do not use `compose.distribution.yaml`, Nginx Proxy Manager, or an `apk-site` production container for the Caddy site.
+
+Focused publisher checks: `pwsh -NoProfile -File backend/test/Publish-Cloudra.Test.ps1 -Candidate <verified.apk>` uses local SSH/SCP/HTTP fakes; `python3 backend/test/publish-cloudra.test.py -q` runs on Linux in disposable temporary directories. Neither contacts production.

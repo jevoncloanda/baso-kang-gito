@@ -1,0 +1,13 @@
+# Production Caddy hosting: mount the state directory, never an individual policy file.
+# The operator provisions this directory outside the Git checkout before enabling it.
+services:
+  api:
+    environment:
+      APP_RELEASE_POLICY_PATH: /releases/current/policy.json
+    volumes:
+      - type: bind
+        source: ${APK_RELEASE_STATE_DIR:-/srv/baso-kang-gito-release-state}
+        target: /releases
+        read_only: true
+        bind:
+          create_host_path: false

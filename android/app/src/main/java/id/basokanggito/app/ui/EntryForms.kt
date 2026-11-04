@@ -37,17 +37,18 @@ fun SaleForm(date: LocalDate, draft: SaleDraft, onChange: (SaleDraft) -> Unit, s
     FormFrame(total = amount, error = saveError, real = real, saving = saving, onSave = { attempted = true; if (amount != null) onSave() }) {
         if (onDate == null) Text(dateLabel(date), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         else BusinessDateControl(date, onDate)
+        if (customerControl != null && draft.channel == "Langsung") customerControl()
+        else EntryInput(stringResource(R.string.customer_optional), draft.customer, { onChange(draft.copy(customer = it)) })
         EntryInput(stringResource(R.string.amount_label), draft.amount, { onChange(draft.copy(amount = it)) }, money = true, prominent = true,
             error = if (attempted && amount == null) stringResource(R.string.amount_error) else null)
         Column(verticalArrangement = Arrangement.spacedBy(Space.small)) {
             Text(stringResource(R.string.channel_label), style = MaterialTheme.typography.titleMedium)
+            if (draft.channel == "GoFood") Text(channelLabel(draft.channel), style = MaterialTheme.typography.bodyMedium)
             ChannelSelection(draft.channel) { channel ->
                 onChange(draft.copy(channel = channel, paid = channel == "Langsung", customerId = if (channel == "Langsung") draft.customerId else null, paymentAmount = ""))
             }
         }
         if (draft.channel != "Langsung") Text(stringResource(if (real) R.string.platform_real_hint else R.string.platform_hint), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        if (customerControl != null && draft.channel == "Langsung") customerControl()
-        else EntryInput(stringResource(R.string.customer_optional), draft.customer, { onChange(draft.copy(customer = it)) })
         if (!editing) Row(Modifier.fillMaxWidth().toggleable(value = draft.paid, role = Role.Checkbox, onValueChange = { onChange(draft.copy(paid = it)) }).heightIn(min = 56.dp), verticalAlignment = Alignment.CenterVertically) {
             Checkbox(checked = draft.paid, onCheckedChange = null)
             Spacer(Modifier.width(Space.small))
@@ -172,7 +173,7 @@ private fun ChannelSelection(value: String, onChange: (String) -> Unit) {
     BoxWithConstraints(Modifier.fillMaxWidth()) {
         val columns = if (maxWidth >= 320.dp && LocalDensity.current.fontScale <= 1.3f) 2 else 1
         Column(Modifier.selectableGroup(), verticalArrangement = Arrangement.spacedBy(Space.small)) {
-            SalesChannels.chunked(columns).forEach { channels ->
+            SelectableSalesChannels.chunked(columns).forEach { channels ->
                 Row(horizontalArrangement = Arrangement.spacedBy(Space.small)) {
                     channels.forEach { channel ->
                         val active = channel == value

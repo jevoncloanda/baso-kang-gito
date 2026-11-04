@@ -34,7 +34,13 @@ fun setAppLanguage(context: Context, language: String) {
 }
 
 @Composable
-fun channelLabel(channel: String): String = if (channel == "Langsung") stringResource(R.string.channel_direct) else channel
+fun channelLabel(channel: String): String = when (channel) {
+    "Langsung" -> stringResource(R.string.channel_direct)
+    "GoFood" -> stringResource(R.string.channel_gofood_legacy)
+    "GoFood - Mamat" -> stringResource(R.string.channel_gofood_mamat)
+    "GoFood - Gito" -> stringResource(R.string.channel_gofood_gito)
+    else -> channel
+}
 
 @Composable
 fun entryTitle(entry: JournalEntry): String = if (entry.isReceipt) stringResource(R.string.receipt_title) else if (entry.isExpense) stringResource(R.string.shopping) else stringResource(R.string.sale_title, channelLabel(entry.channel))

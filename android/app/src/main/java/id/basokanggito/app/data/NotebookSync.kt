@@ -24,7 +24,9 @@ class NotebookHttpClient(private val baseUrl: String, private val token: String,
         try {
             connection.connectTimeout = 10_000; connection.readTimeout = 10_000
             connection.instanceFollowRedirects = false
-            connection.setRequestProperty("Authorization", "Bearer $token")
+            if (token.isNotEmpty()) connection.setRequestProperty("Authorization", "Bearer $token")
+            connection.setRequestProperty("X-App-Version-Code", BuildConfig.VERSION_CODE.toString())
+            connection.setRequestProperty("X-App-Variant", BuildConfig.BUILD_TYPE)
             connection.setRequestProperty("Accept", "application/json")
             if (body != null) {
                 connection.requestMethod = "POST"; connection.doOutput = true
@@ -37,6 +39,10 @@ class NotebookHttpClient(private val baseUrl: String, private val token: String,
                 val value = reader.readText(); if (value.length > 2_000_000) throw IOException("response_too_large"); value
             } ?: throw IOException("empty_response")
             val result = JSONObject(text)
+            if (status == 426 && result.optString("error") == "APP_UPDATE_REQUIRED") {
+                onAccessError(status, result)
+                throw AppUpdateRequired(result.getJSONObject("policy"))
+            }
             if (status == 401 || status == 403) onAccessError(status, result)
             return HttpResult(status, result)
         } finally { connection.disconnect() }
@@ -56,23 +62,26 @@ open class NotebookApplication : Application() {
         java.io.File(cacheDir, "notebook-backup").listFiles()?.filter {
             it.isFile && it.name.startsWith("notebook-") && it.extension in setOf("stage", "bkgbak")
         }?.forEach { it.delete() }
+        java.io.File(cacheDir, "apk-updates").listFiles()?.filter {
+            it.isFile && it.name.matches(Regex("[a-f0-9-]{36}\\.apk"))
+        }?.forEach { it.delete() }
         if (backgroundSyncEnabled) {
             WorkManager.getInstance(this).enqueueUniquePeriodicWork("notebook-periodic", ExistingPeriodicWorkPolicy.KEEP,
                 PeriodicWorkRequestBuilder<NotebookSyncWorker>(15, TimeUnit.MINUTES)
                     .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()).build())
-            scheduleSync(this)
+            scheduleSync(this, forceCompatibility = true)
         }
     }
 }
 fun syncConfigured() = BuildConfig.SYNC_URL.startsWith("https://") || (BuildConfig.DEBUG &&
     (BuildConfig.SYNC_URL == "http://127.0.0.1:3000" || (BuildConfig.BUILD_TYPE == "validation" && BuildConfig.SYNC_URL == "http://127.0.0.1:3001")))
 // User edits and unlocks replace pending work. Periodic foreground ticks use KEEP so they never reset retry backoff or chain syncs.
-fun scheduleSync(context: Context, policy: ExistingWorkPolicy = ExistingWorkPolicy.APPEND_OR_REPLACE) {
+fun scheduleSync(context: Context, policy: ExistingWorkPolicy = ExistingWorkPolicy.APPEND_OR_REPLACE, forceCompatibility: Boolean = false) {
     if (!syncConfigured()) return
     if ((context.applicationContext as? NotebookApplication)?.backgroundSyncEnabled == false) return
     WorkManager.getInstance(context).enqueueUniqueWork("notebook-sync", policy,
         OneTimeWorkRequestBuilder<NotebookSyncWorker>()
-            .setInputData(workDataOf("requestedAt" to SyncRequests.next()))
+            .setInputData(workDataOf("requestedAt" to SyncRequests.next(), "forceCompatibility" to forceCompatibility))
             .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
             .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 10, TimeUnit.SECONDS).build())
 }
@@ -81,7 +90,9 @@ class NotebookSyncWorker(context: Context, parameters: WorkerParameters) : Corou
         if (!syncConfigured()) return@withContext Result.success()
         val app = applicationContext as NotebookApplication
         if (!app.access.usable()) return@withContext Result.success()
-        if (app.repository.synchronize(app.access.client(), inputData.getString("requestedAt"))) Result.success()
-        else if (!app.access.usable()) Result.success() else Result.retry()
+        val force = inputData.getBoolean("forceCompatibility", false)
+        if (!force && app.repository.updateRequired()) return@withContext Result.success()
+        if (app.repository.synchronize(app.access.client(), inputData.getString("requestedAt"), force)) Result.success()
+        else if (!app.access.usable() || app.repository.updateRequired()) Result.success() else Result.retry()
     }
 }

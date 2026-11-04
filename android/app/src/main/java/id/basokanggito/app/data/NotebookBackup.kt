@@ -108,7 +108,7 @@ class NotebookBackup(context: Context, private val repository: NotebookRepositor
                 "draft" -> meta.value.isEmpty() || runCatching { emptyDraft(JSONObject(meta.value)) }.getOrDefault(false)
                 "customerDraft" -> meta.value.isEmpty() || runCatching { emptyCustomerDraft(JSONObject(meta.value)) }.getOrDefault(false)
                 "cursor" -> meta.value.isEmpty() || meta.value.matches(Regex("0|[1-9][0-9]{0,17}"))
-                "lastSync", "syncError", "chronologyVersion", "catalogRevision", "catalogVersion", "lastBackupAt", "restoredAt" -> true
+                "lastSync", "syncError", "chronologyVersion", "catalogRevision", "catalogVersion", "activityVersion", "lastBackupAt", "restoredAt", "appVersionPolicy", "compatibilityError" -> true
                 else -> meta.value.isEmpty()
             }
         }
@@ -194,7 +194,8 @@ class NotebookBackup(context: Context, private val repository: NotebookRepositor
                 stored.serverPayload?.let { require(CatalogItem.parse(JSONObject(it)).id == stored.id) }
                 stored.id to value
             }
-            fun references(value: BookRecord) { require(value.items.all { it.masterId == null || it.masterId in catalog }) }
+            // A partial sync can persist a financial reference before its catalog cache arrives.
+            fun references(value: BookRecord) { value.items.forEach { it.masterId?.let(::validId) } }
             snapshot.operations.forEach { stored ->
                 validId(stored.operationId); validId(stored.recordId)
                 require(stored.state in setOf("pending", "failed", "acknowledged", "reviewed") && stored.error.length <= 200)
@@ -255,8 +256,10 @@ class NotebookBackup(context: Context, private val repository: NotebookRepositor
                 key == "draft" -> validateDraft(JSONObject(raw), knownCustomers, catalog.keys)
                 key.startsWith("conflict:") -> {
                     val id = key.removePrefix("conflict:")
-                    require(snapshot.records.any { it.id == id } && snapshot.operations.any { it.recordId == id && it.state == "failed" })
-                    val conflict = record(JSONObject(raw)); references(conflict); require(conflict.customerId == null || conflict.customerId in knownCustomers)
+                    require((snapshot.records.any { it.id == id } || id in catalog) && snapshot.operations.any { it.recordId == id && it.state == "failed" })
+                    if (id in catalog) CatalogItem.parse(JSONObject(raw)) else {
+                        val conflict = record(JSONObject(raw)); references(conflict); require(conflict.customerId == null || conflict.customerId in knownCustomers)
+                    }
                 }
             } }
             snapshot.operations.filter { it.state in setOf("pending", "failed") }.groupBy { it.recordId }.forEach { (id, active) ->
@@ -313,6 +316,7 @@ class NotebookBackup(context: Context, private val repository: NotebookRepositor
 
     private fun withoutChronology(json: JSONObject): String {
         json.remove("createdAt")
+        json.remove("initialReceiptId")
         json.optJSONArray("receipts").objects().forEach { it.remove("createdAt") }
         return json.toString()
     }
@@ -341,21 +345,20 @@ class NotebookBackup(context: Context, private val repository: NotebookRepositor
         require(draft.getString("kind") in listOf("", "sale", "expense", "receipt"))
         val sale = draft.getJSONObject("sale")
         require(listOf("amount", "customer", "channel", "note", "method").all { sale.opt(it) is String })
-        require(sale.getString("channel") in listOf("Langsung", "GoFood", "GrabFood", "ShopeeFood") && sale.opt("paid") is Boolean)
+        require(sale.getString("channel") in listOf("Langsung", "GoFood", "GrabFood", "ShopeeFood", "GoFood - Mamat", "GoFood - Gito") && sale.opt("paid") is Boolean)
         if (!sale.isNull("customerId")) validId(sale.getString("customerId")).also { if (knownCustomers != null) require(it in knownCustomers) }
         draft.getJSONArray("expense").objects().forEach {
             validId(it.getString("id")); require(it.opt("name") is String && it.opt("amount") is String)
-            if (!it.isNull("masterId")) validId(it.getString("masterId")).also { id -> if (knownCatalog != null) require(id in knownCatalog) }
+            if (!it.isNull("masterId")) validId(it.getString("masterId"))
         }
         require(draft.opt("receiptAmount") is String); validDate(draft.getString("receiptDate")); validId(draft.getString("receiptId"))
         require(draft.getString("receiptMethod") in listOf("cash", "transfer"))
         draft.optJSONObject("recoveredEdit")?.let {
             val edit = RecoveredEdit.parse(it.toString()); record(edit.local.json())
             if (knownCustomers != null) require(edit.local.customerId == null || edit.local.customerId in knownCustomers)
-            if (knownCatalog != null) require(edit.local.items.all { item -> item.masterId == null || item.masterId in knownCatalog })
             edit.server?.let { server -> record(server.json()); require(server.id == edit.local.id && server.kind == edit.local.kind)
                 if (knownCustomers != null) require(server.customerId == null || server.customerId in knownCustomers)
-                if (knownCatalog != null) require(server.items.all { item -> item.masterId == null || item.masterId in knownCatalog }) }
+            }
         }
     }
 

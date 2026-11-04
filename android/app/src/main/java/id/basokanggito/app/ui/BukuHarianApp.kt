@@ -158,10 +158,12 @@ fun TransactionRow(entry: JournalEntry, showPending: Boolean = true, onClick: ()
         IconBadge(if (entry.isExpense) R.drawable.ic_shopping else R.drawable.ic_sale, accent = entry.isExpense)
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(entryTitle(entry), style = MaterialTheme.typography.labelLarge)
-            Text(if (entry.isExpense) pluralStringResource(R.plurals.item_count, entry.lines.size, entry.lines.size) else entry.customer.ifEmpty { if (entry.channel == "Langsung") stringResource(R.string.no_customer) else stringResource(R.string.daily_total) },
-                style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (entry.isExpense || entry.customer.isNotBlank() || entry.channel != "Langsung") {
+                Text(if (entry.isExpense) pluralStringResource(R.plurals.item_count, entry.lines.size, entry.lines.size) else entry.customer.ifEmpty { stringResource(R.string.daily_total) },
+                    style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
             if (entry.voided) Text(stringResource(R.string.voided), style = MaterialTheme.typography.bodyMedium)
-            else if (!entry.isExpense && !entry.isReceipt) Text(stringResource(if (entry.received == entry.amount) R.string.paid else R.string.unpaid), style = MaterialTheme.typography.bodyMedium,
+            else if (!entry.isExpense && !entry.isReceipt) Text(stringResource(if (entry.immediatePayment) R.string.paid_payment_received else if (entry.received == entry.amount) R.string.paid else R.string.unpaid), style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
             if (entry.syncState == "failed" || (showPending && entry.syncState.isNotEmpty())) Text(stringResource(if (entry.syncState == "failed") R.string.sync_review else R.string.sync_pending),
                 color = if (entry.syncState == "failed") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
@@ -246,19 +248,24 @@ internal fun MonthlyRecap(entries: List<JournalEntry>, month: YearMonth, onMonth
 
 @Composable
 internal fun ChannelSummary(entries: List<JournalEntry>, modifier: Modifier = Modifier) {
+    val channels = channelSales(entries)
     Surface(modifier.fillMaxWidth(), shape = MaterialTheme.shapes.medium) {
         Column(Modifier.padding(Space.medium), verticalArrangement = Arrangement.spacedBy(Space.small)) {
             SectionTitle(stringResource(R.string.by_channel))
             Column {
-                SalesChannels.forEachIndexed { index, channel ->
+                channels.forEachIndexed { index, (channel, amount) ->
                     Row(Modifier.padding(vertical = Space.tiny), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Space.small)) {
                         IconBadge(channelIcon(channel), accent = channel == "Langsung")
                         Column(Modifier.weight(1f)) {
-                            MoneyRow(channelLabel(channel), entries.filter { !it.isExpense && !it.isReceipt && !it.voided && it.channel == channel }.fold(java.math.BigInteger.ZERO) { sum, entry -> sum + entry.amount.toBigInteger() })
+                            MoneyRow(channelLabel(channel), amount)
                         }
                     }
-                    if (index != SalesChannels.lastIndex) HorizontalDivider(Modifier.padding(start = 48.dp), color = MaterialTheme.colorScheme.outlineVariant)
+                    if (index != channels.lastIndex) HorizontalDivider(Modifier.padding(start = 48.dp), color = MaterialTheme.colorScheme.outlineVariant)
                 }
+                val gofood = channels.filter { it.first in listOf("GoFood", "GoFood - Mamat", "GoFood - Gito") }
+                    .fold(java.math.BigInteger.ZERO) { sum, channel -> sum + channel.second }
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                MoneyRow(stringResource(R.string.gofood_combined), gofood)
             }
         }
     }

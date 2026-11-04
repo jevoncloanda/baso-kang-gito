@@ -75,6 +75,11 @@ fun AccessGate(model: AccessViewModel = viewModel(), content: @Composable () -> 
     val notebook: NotebookViewModel = viewModel(factory = remember { object : androidx.lifecycle.ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST") override fun <T : androidx.lifecycle.ViewModel> create(modelClass: Class<T>): T = NotebookViewModel((context.applicationContext as NotebookApplication).repository) as T
     } })
+    val notebookState by notebook.state.collectAsState()
+    val checkingCompatibility by notebook.checkingCompatibility.collectAsState()
+    LaunchedEffect(covered) { if (!covered) notebook.checkCompatibility() }
+    val versionPolicy = AppVersionPolicy.cached(notebookState.meta)
+    if (versionPolicy?.required() == true) AppUpdateRequiredDialog(versionPolicy, checkingCompatibility, notebook::checkCompatibility)
     LaunchedEffect(unlocked, covered) { if (!unlocked || covered) { pin = ""; confirmation = ""; bootstrap = "" } }
     LaunchedEffect(state.hasPin, unlocked) {
         if (state.hasPin && !unlocked) while (true) {

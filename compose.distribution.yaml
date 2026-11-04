@@ -1,0 +1,27 @@
+# Local development preview only. Production uses Caddy and compose.releases.yaml.
+# Run release.mjs init before enabling this file.
+services:
+  api:
+    environment:
+      APP_RELEASE_POLICY_PATH: /releases/policy.json
+    volumes:
+      - ./.releases:/releases:ro
+  apk-site:
+    build: ./distribution
+    ports:
+      - "127.0.0.1:${APK_SITE_PORT:-8081}:80"
+    volumes:
+      - ./.releases/artifacts:/usr/share/nginx/html/releases:ro
+    depends_on:
+      api:
+        condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /var/cache/nginx
+      - /var/run
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
