@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Read-only HTTPS integrity gate for website publication; failures trigger caller rollback."""
 import hashlib
+from html.parser import HTMLParser
 import json
 from pathlib import Path
+import re
 import runpy
 import sys
 import urllib.request
@@ -10,6 +12,63 @@ import uuid
 
 PAGE = 'https://basokanggito.jevoncl.com'
 API = 'https://basokanggito-api.jevoncl.com'
+
+
+class WebsiteHTML(HTMLParser):
+    """Compare content and references, allowing formatting and one known edge script."""
+    VOID = {'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr'}
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.tokens = []
+        self.beacon = False
+        self.beacon_count = 0
+
+    def handle_starttag(self, tag, attrs):
+        require(not self.beacon, 'Unexpected markup inside Cloudflare analytics script')
+        attributes = dict(attrs)
+        if (tag == 'script' and len(attributes) == len(attrs) and
+                set(attributes) <= {'src', 'type', 'defer', 'integrity', 'data-cf-beacon', 'crossorigin'} and
+                re.fullmatch(r'https://static\.cloudflareinsights\.com/beacon\.min\.js(?:/v[a-f0-9]+)?', attributes.get('src') or '')):
+            config = json.loads(attributes.get('data-cf-beacon') or '{}')
+            require(isinstance(config, dict) and re.fullmatch(r'[a-f0-9]{32}', str(config.get('token', ''))),
+                    'Invalid Cloudflare analytics configuration')
+            self.beacon_count += 1
+            require(self.beacon_count == 1, 'Duplicate Cloudflare analytics script')
+            self.beacon = True
+        else:
+            self.tokens.append(('start', tag, tuple(sorted(attrs))))
+
+    def handle_endtag(self, tag):
+        if self.beacon:
+            require(tag == 'script', 'Unclosed Cloudflare analytics script')
+            self.beacon = False
+        elif tag not in self.VOID:
+            self.tokens.append(('end', tag))
+
+    def handle_startendtag(self, tag, attrs):
+        require(tag != 'script', 'Self-closing scripts are not valid HTML')
+        self.handle_starttag(tag, attrs)
+        if tag not in self.VOID:
+            self.handle_endtag(tag)
+
+    def handle_data(self, data):
+        text = ' '.join(data.split())
+        if self.beacon:
+            require(not text, 'Unexpected inline Cloudflare analytics code')
+        elif text:
+            self.tokens.append(('text', text))
+
+    def handle_decl(self, decl):
+        self.tokens.append(('declaration', ' '.join(decl.lower().split())))
+
+
+def html_signature(body):
+    parser = WebsiteHTML()
+    parser.feed(body.decode('utf-8'))
+    parser.close()
+    require(not parser.beacon, 'Unclosed Cloudflare analytics script')
+    return parser.tokens
 
 
 def require(condition, message):
@@ -55,11 +114,10 @@ def verify(result, stage):
         if asset != 'index.html':
             url += '?v=' + expected
         body, actual, _ = get(url, content_types)
-        if asset == 'index.html' and actual != expected:
-            position = next((i for i, (left, right) in enumerate(zip(expected_bytes, body)) if left != right), min(len(expected_bytes), len(body)))
-            print(f'Homepage difference at byte {position}: expected {expected_bytes[position:position + 800]!r}; received {body[position:position + 800]!r}', file=sys.stderr)
-        require(actual == expected, f'Public asset mismatch: {asset}; expected {expected}, got {actual}; '
-                + (repr(body[:240]) if asset == 'index.html' else url))
+        if asset == 'index.html':
+            require(html_signature(body) == html_signature(expected_bytes), 'Public homepage content or asset references mismatch')
+        else:
+            require(actual == expected, f'Public asset mismatch: {asset}; expected {expected}, got {actual}')
     if policy['downloadUrl'] is not None:
         _, actual, headers = get(policy['downloadUrl'], ('application/vnd.android.package-archive',))
         require(actual == policy['sha256'], 'Public APK checksum mismatch')

@@ -86,9 +86,29 @@ function Verify-Public($Info, $Policy, [string]$Folder) {
         $hasher = [Security.Cryptography.SHA256]::Create()
         try { $expectedHash = ([BitConverter]::ToString($hasher.ComputeHash($expectedBytes))).Replace('-', '').ToLowerInvariant() }
         finally { $hasher.Dispose() }
-        $url = if ($asset -eq 'index.html') { "$page/$asset" } else { "$page/$asset`?v=$expectedHash" }
+        $url = if ($asset -eq 'index.html') { "$page/" } else { "$page/$asset`?v=$expectedHash" }
         $null = Get-Public $url $downloadedAsset
-        Require ((Get-FileHash -LiteralPath $downloadedAsset -Algorithm SHA256).Hash.ToLowerInvariant() -ceq $expectedHash) "Public asset checksum mismatch: $asset"
+        $actualBytes = [IO.File]::ReadAllBytes($downloadedAsset)
+        if ($asset -eq 'index.html') {
+            $html = $utf8.GetString($actualBytes)
+            $beacon = [regex]::Match($html, '<script type="module" src="https://static\.cloudflareinsights\.com/beacon\.min\.js/v[a-f0-9]+" integrity="sha512-[A-Za-z0-9+/]{86}==" data-cf-beacon=''({[^<>\r\n]*})'' crossorigin="anonymous"></script>\n(?=</body>\n</html>\n\z)')
+            if ($beacon.Success) {
+                try {
+                    $config = $beacon.Groups[1].Value | ConvertFrom-Json
+                    $keys = ($config.PSObject.Properties.Name | Sort-Object) -join ','
+                    if ($keys -ceq 'r,spa,token,version' -and $config.version -is [string] -and $config.version -cmatch '^\d{4}\.\d{2}\.\d+$' -and
+                        $config.token -is [string] -and $config.token -cmatch '^[a-f0-9]{32}$' -and
+                        ($config.r -is [int] -or $config.r -is [long]) -and $config.r -eq 1 -and
+                        ($config.spa -is [int] -or $config.spa -is [long]) -and $config.spa -eq 2) {
+                        $actualBytes = $utf8.GetBytes($html.Remove($beacon.Index, $beacon.Length))
+                    }
+                } catch { <# Unrecognized edge content must fail the checksum check. #> }
+            }
+        }
+        $hasher = [Security.Cryptography.SHA256]::Create()
+        try { $actualHash = ([BitConverter]::ToString($hasher.ComputeHash($actualBytes))).Replace('-', '').ToLowerInvariant() }
+        finally { $hasher.Dispose() }
+        Require ($actualHash -ceq $expectedHash) "Public asset checksum mismatch: $asset"
     }
 }
 

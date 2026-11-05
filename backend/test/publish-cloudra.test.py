@@ -154,6 +154,47 @@ class PublishingTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'metadata bytes changed'):
                 gate['verify'](result, stage)
 
+        for path in ('/', '/site.css', '/site.js', '/favicon.ico', '/favicon-32x32.png', '/apple-touch-icon.png',
+                     '/releases/' + publisher.filename(published['policy'])):
+            with self.subTest(corrupt_path=path):
+                def corrupted_get(url, content_type=None):
+                    body, sha, headers = public_get(url, content_type)
+                    if urlsplit(url).path == path:
+                        return b'<html>stale page</html>', '0' * 64, headers
+                    return body, sha, headers
+                with mock.patch.dict(gate['verify'].__globals__, get=corrupted_get):
+                    with self.assertRaises(ValueError):
+                        gate['verify'](result, stage)
+
+    def test_html_signature_allows_analytics_and_formatting_but_rejects_stale_or_changed_content(self):
+        gate = runpy.run_path(str(SCRIPT.with_name('verify-website.py')))
+        source = b'<!doctype html><html><body><main id="download" class="release">Baso Kang Gito</main><script type="module" src="/site.js?v=abc"></script>\n</body>\n</html>\n'
+        signature = gate['html_signature']
+        beacon = (b'<script type="module" src="https://static.cloudflareinsights.com/beacon.min.js/vabc123" '
+                  b'integrity="sha512-' + b'A' * 86 + b'==" data-cf-beacon=\'{"version":"2024.11.0","token":"' + b'a' * 32 +
+                  b'","r":1,"spa":2}\' crossorigin="anonymous"></script>\n')
+        response = source.replace(b'</body>', beacon + b'</body>')
+        self.assertEqual(signature(response), signature(source))
+        formatted = response.replace(b'id="download" class="release"', b" class='release' id='download'").replace(b'Baso Kang Gito', b'Baso\n Kang Gito')
+        self.assertEqual(signature(formatted), signature(source))
+        reordered = beacon.replace(b'<script type="module" ', b'<script defer ').replace(b'crossorigin="anonymous"', b'type="module" crossorigin="anonymous"')
+        self.assertEqual(signature(source.replace(b'</body>', reordered + b'</body>')), signature(source))
+        for unsafe in (response.replace(b'static.cloudflareinsights.com', b'evil.example'),
+                       response.replace(b'<script type="module" src="https:', b'<script onclick="evil()" type="module" src="https:'),
+                       response.replace(b'></script>', b'>evil()</script>'),
+                       response.replace(b'</body>', b'<script>evil()</script></body>'),
+                       response.replace(b'Baso Kang Gito', b'Old website'),
+                       response.replace(b'/site.js?v=abc', b'/site.js?v=old'),
+                       response.replace(beacon, beacon + beacon),
+                       response.replace(b'</script>\n</body>', b'</body>'),
+                       response.replace(b'crossorigin="anonymous"></script>', b'crossorigin="anonymous"/>')):
+            with self.subTest(unsafe=unsafe):
+                try:
+                    parsed = signature(unsafe)
+                except ValueError:
+                    continue
+                self.assertNotEqual(parsed, signature(source))
+
     def test_website_corrupt_artifact_and_activation_failure(self):
         self.run_cli('publish', self.stage())
         previous = os.readlink(self.state / 'current')

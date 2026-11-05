@@ -75,8 +75,9 @@ function global:Invoke-WebRequest {
         if ($global:publishTestMode -eq 'checksum') { [IO.File]::AppendAllText($OutFile, 'corrupted public download') }
         $responseHeaders = @{ 'Content-Type' = 'application/vnd.android.package-archive'; 'Cache-Control' = 'public, max-age=31536000, immutable' }
     } else {
-        Copy-Item -LiteralPath (Join-Path $global:publishTestRoot ('distribution' + $url.AbsolutePath)) -Destination $OutFile
-        if ($url.AbsolutePath -eq '/index.html') {
+        $assetPath = if ($url.AbsolutePath -eq '/') { '/index.html' } else { $url.AbsolutePath }
+        Copy-Item -LiteralPath (Join-Path $global:publishTestRoot ('distribution' + $assetPath)) -Destination $OutFile
+        if ($assetPath -eq '/index.html') {
             $encoding = New-Object System.Text.UTF8Encoding($false)
             $html = $encoding.GetString([IO.File]::ReadAllBytes($OutFile))
             foreach ($asset in @('site.css', 'site.js', 'favicon.ico', 'favicon-32x32.png', 'apple-touch-icon.png')) {
@@ -84,6 +85,13 @@ function global:Invoke-WebRequest {
                 $html = $html.Replace(('="/' + $asset + '"'), ('="/' + $asset + '?v=' + $hash + '"'))
             }
             [IO.File]::WriteAllText($OutFile, $html, $encoding)
+            if ($global:publishTestMode -eq 'analytics') {
+                $beacon = '<script type="module" src="https://static.cloudflareinsights.com/beacon.min.js/vabc123" integrity="sha512-' + ('A' * 86) + '==" data-cf-beacon=''{' + '"version":"2024.11.0","token":"' + ('a' * 32) + '","r":1,"spa":2}'' crossorigin="anonymous"></script>' + "`n"
+                [IO.File]::WriteAllText($OutFile, $html.Replace('</body>', ($beacon + '</body>')), $encoding)
+            }
+            if ($global:publishTestMode -eq 'stale-html') {
+                [IO.File]::WriteAllText($OutFile, $html.Replace('Download Aplikasi', 'Old download page'), $encoding)
+            }
         }
     }
     [pscustomobject]@{ StatusCode = 200; Headers = $responseHeaders; Content = $content }
@@ -91,7 +99,7 @@ function global:Invoke-WebRequest {
 
 try {
     $passed = 0
-    foreach ($mode in @('success', 'success-stderr', 'ssh', 'scp', 'remote', 'remote-stderr', 'malformed-stderr', 'checksum', 'api')) {
+    foreach ($mode in @('success', 'success-stderr', 'analytics', 'stale-html', 'ssh', 'scp', 'remote', 'remote-stderr', 'malformed-stderr', 'checksum', 'api')) {
         $global:publishTestMode = $mode
         $global:publishTestSsh = 0; $global:publishTestScp = 0; $global:publishTestActivation = 0; $global:publishTestRollback = 0
         $global:publishTestPolicy = Get-Content -LiteralPath (Join-Path $global:publishTestRoot 'backend/release-policy.json') -Raw | ConvertFrom-Json
@@ -107,9 +115,9 @@ try {
         try {
             & (Join-Path $global:publishTestRoot 'backend/scripts/Publish-Cloudra.ps1') -SshHost test-cloudra -NotesFile $notesFile -Candidate $spacedCandidate -Publish *> $caseLog
         } catch { $failed = $true; $failureMessage = $_.Exception.Message + ' ' + $_.ScriptStackTrace }
-        Assert-Test ($failed -eq ($mode -notin @('success', 'success-stderr'))) "Unexpected result for ${mode}: $failureMessage"
+        Assert-Test ($failed -eq ($mode -notin @('success', 'success-stderr', 'analytics'))) "Unexpected result for ${mode}: $failureMessage"
         Assert-Test ($global:publishTestSsh -gt 0) "SSH fake unused for $mode"
-        Assert-Test ($global:publishTestRollback -eq $(if ($mode -in @('remote', 'remote-stderr', 'malformed-stderr', 'checksum', 'api')) { 1 } else { 0 })) "Incorrect rollback behavior for $mode"
+        Assert-Test ($global:publishTestRollback -eq $(if ($mode -in @('remote', 'remote-stderr', 'malformed-stderr', 'checksum', 'api', 'stale-html')) { 1 } else { 0 })) "Incorrect rollback behavior for $mode"
         if ($mode -eq 'remote-stderr') { Assert-Test ($failureMessage -match 'exit 23' -and $failureMessage -match 'IO is still pending') 'Nonzero SSH exit or stderr diagnostic was discarded' }
         if ($mode -eq 'success-stderr') { Assert-Test ((Get-Content -LiteralPath $caseLog -Raw) -match 'IO is still pending') 'Successful SSH stderr diagnostic was discarded' }
         if ($mode -eq 'ssh') { Assert-Test ($global:publishTestScp -eq 0) 'Upload followed failed SSH preflight' }
