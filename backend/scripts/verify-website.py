@@ -50,11 +50,12 @@ def verify(result, stage):
               'favicon-32x32.png': ('image/png',), 'apple-touch-icon.png': ('image/png',)}
     for asset, content_types in assets.items():
         expected = hashlib.sha256(website_asset(stage, asset)).hexdigest()
-        url = PAGE + '/' + asset
+        url = PAGE + ('/' if asset == 'index.html' else '/' + asset)
         if asset != 'index.html':
             url += '?v=' + expected
-        _, actual, _ = get(url, content_types)
-        require(actual == expected, 'Public asset mismatch: ' + asset)
+        body, actual, _ = get(url, content_types)
+        require(actual == expected, f'Public asset mismatch: {asset}; expected {expected}, got {actual}; '
+                + (repr(body[:240]) if asset == 'index.html' else url))
     if policy['downloadUrl'] is not None:
         _, actual, headers = get(policy['downloadUrl'], ('application/vnd.android.package-archive',))
         require(actual == policy['sha256'], 'Public APK checksum mismatch')

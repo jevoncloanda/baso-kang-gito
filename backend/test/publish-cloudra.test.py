@@ -141,7 +141,7 @@ class PublishingTest(unittest.TestCase):
                 return b'{"status":"ok"}', '', {}
             if parsed.path.startswith('/releases/'):
                 return b'', published['policy']['sha256'], {'Cache-Control': 'public, immutable'}
-            asset = parsed.path[1:]
+            asset = 'index.html' if parsed.path == '/' else parsed.path[1:]
             expected = publisher.website_asset(stage, asset)
             sha = publisher.hashlib.sha256(expected).hexdigest()
             self.assertEqual(parsed.query, '' if asset == 'index.html' else 'v=' + sha)
