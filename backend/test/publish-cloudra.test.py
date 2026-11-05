@@ -56,6 +56,87 @@ class PublishingTest(unittest.TestCase):
         self.assertEqual(os.readlink(self.state / 'current'), 'generations/bootstrap')
         self.assertEqual((self.public_root / 'index.html').read_text(), 'existing placeholder')
 
+    def website_stage(self):
+        folder = self.state / 'staging' / ('upload-' + uuid.uuid4().hex)
+        folder.mkdir()
+        for asset in publisher.ASSETS:
+            (folder / asset).write_text('website ' + asset)
+        return folder
+
+    def test_website_preserves_policy_bytes_artifact_pin_and_history(self):
+        published = self.run_cli('publish', self.stage())
+        old = self.state / published['current']
+        # Include publisher-owned fields unknown to this operation and noncanonical formatting.
+        raw = json.dumps({**published['policy'], 'futureMetadata': {'keep': True}}, separators=(',', ':')).encode() + b'\n'
+        (old / 'policy.json').write_bytes(raw)
+        artifact = self.state / 'artifacts' / publisher.filename(published['policy'])
+        before = (artifact.stat().st_ino, artifact.read_bytes(), (self.state / 'production-signing.json').read_bytes())
+        stage = self.website_stage()
+        result = self.run_cli('publish-website', stage)
+        self.assertTrue(result['changed'])
+        self.assertEqual(result['previous'], published['current'])
+        self.assertEqual((self.public_root / 'version.json').read_bytes(), raw)
+        self.assertEqual((old / 'policy.json').read_bytes(), raw)
+        self.assertEqual((old / 'public/index.html').read_text(), 'fixture index.html')
+        self.assertEqual(before, (artifact.stat().st_ino, artifact.read_bytes(), (self.state / 'production-signing.json').read_bytes()))
+        self.assertEqual(len(list((self.state / 'artifacts').iterdir())), 1)
+        for asset in publisher.ASSETS:
+            self.assertEqual((self.public_root / asset).read_bytes(), (stage / asset).read_bytes())
+        for retry_stage in (stage, self.website_stage()):
+            self.assertFalse(self.run_cli('publish-website', retry_stage)['changed'])
+        self.assertTrue(self.run_cli('rollback', stage)['restored'])
+        self.assertEqual(os.readlink(self.state / 'current'), published['current'])
+
+    def test_website_bootstrap_and_invalid_stages(self):
+        for invalid in ('missing', 'extra', 'symlink'):
+            stage = self.website_stage()
+            if invalid == 'missing':
+                (stage / 'site.js').unlink()
+            elif invalid == 'extra':
+                (stage / 'artifact.apk').write_bytes(b'not allowed')
+            else:
+                (stage / 'site.js').unlink()
+                (stage / 'site.js').symlink_to(stage / 'site.css')
+            self.run_cli('publish-website', stage, success=False)
+            self.unchanged()
+        raw = (self.state / 'current/policy.json').read_bytes()
+        self.run_cli('publish-website', self.website_stage())
+        self.assertEqual((self.public_root / 'version.json').read_bytes(), raw)
+        self.assertEqual(list((self.state / 'artifacts').iterdir()), [])
+
+    def test_website_corrupt_artifact_and_activation_failure(self):
+        self.run_cli('publish', self.stage())
+        previous = os.readlink(self.state / 'current')
+        stage = self.website_stage()
+        with mock.patch.object(publisher, 'activate', side_effect=OSError('interrupted')):
+            with self.assertRaises(OSError):
+                publisher.publish_website(self.state, stage)
+        self.assertEqual(os.readlink(self.state / 'current'), previous)
+        (self.public_root / 'latest.apk').write_bytes(b'corrupted fixture')
+        self.run_cli('publish-website', self.website_stage(), success=False)
+        self.assertEqual(os.readlink(self.state / 'current'), previous)
+
+    def test_website_and_apk_cli_share_lock_and_preserve_latest(self):
+        self.run_cli('publish', self.stage())
+        website, apk = self.website_stage(), self.stage(3, '0.0.3', b'next')
+        # Hold the actual CLI lock so both operations must wait for the same owner.
+        with (self.state / 'publish.lock').open('a') as lock:
+            publisher.fcntl.flock(lock, publisher.fcntl.LOCK_EX)
+            children = [subprocess.Popen([sys.executable, str(SCRIPT), command, '--state-root', str(self.state), '--stage', str(stage)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                        for command, stage in (('publish-website', website), ('publish', apk))]
+            for child in children:
+                with self.assertRaises(subprocess.TimeoutExpired):
+                    child.wait(timeout=0.2)
+            publisher.fcntl.flock(lock, publisher.fcntl.LOCK_UN)
+        results = [child.communicate(timeout=10) for child in children]
+        self.assertEqual([child.returncode for child in children], [0, 0], results)
+        policy = publisher.read_json(self.public_root / 'version.json')
+        self.assertEqual(policy['latestVersionCode'], 3)
+        self.assertEqual(publisher.digest(self.public_root / 'latest.apk'), policy['sha256'])
+        receipts = [json.loads(output) for output, _ in results]
+        stale = next(stage for stage, result in zip((website, apk), receipts) if result['current'] != os.readlink(self.state / 'current'))
+        self.run_cli('rollback', stale, success=False)
+
     def test_atomic_public_tree_and_single_policy_with_restrictive_umask(self):
         stage = self.stage()
         mask = os.umask(0o077)

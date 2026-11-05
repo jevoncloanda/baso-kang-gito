@@ -14,7 +14,7 @@ $ErrorActionPreference = 'Stop'
 $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 $page = 'https://basokanggito.jevoncl.com'
 $api = 'https://basokanggito-api.jevoncl.com/v1/app-version'
-$assets = @('index.html', 'site.css', 'site.js')
+$assets = @('index.html', 'site.css', 'site.js', 'favicon.ico', 'favicon-32x32.png', 'apple-touch-icon.png')
 $sshOptions = @('-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes', '-o', 'ConnectTimeout=15')
 $utf8 = New-Object System.Text.UTF8Encoding($false)
 $upload = $null
@@ -130,7 +130,7 @@ try {
     $null = Invoke-Checked 'ssh' ($sshOptions + @($SshHost, $preflight))
     Push-Location $upload
     try {
-        $null = Invoke-Checked 'scp' ($sshOptions + @('--', 'artifact.apk', 'manifest.json', 'index.html', 'site.css', 'site.js', 'publish-cloudra.py', "${SshHost}:$remoteStage/"))
+        $null = Invoke-Checked 'scp' ($sshOptions + @('--', 'artifact.apk', 'manifest.json', 'publish-cloudra.py') + $assets + @("${SshHost}:$remoteStage/"))
     } finally { Pop-Location }
     $remoteAttempted = $true
     $result = (Invoke-Checked 'ssh' ($sshOptions + @($SshHost, "python3 '$remoteStage/publish-cloudra.py' publish --state-root '$RemoteState' --stage '$remoteStage'"))) | ConvertFrom-Json

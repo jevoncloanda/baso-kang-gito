@@ -6,11 +6,18 @@ on:
     branches:
       - main
     paths:
+      # Publisher tooling deploys through deploy-website.yml, without restarting services.
       - "backend/**"
+      - "!backend/scripts/publish-cloudra.py"
+      - "!backend/scripts/Publish-Cloudra.ps1"
+      - "!backend/scripts/deploy-website.sh"
+      - "!backend/scripts/verify-website.py"
+      - "!backend/test/publish-cloudra.test.py"
+      - "!backend/test/Publish-Cloudra.Test.ps1"
       - "compose.yaml"
       - "compose.production.yaml"
       - "compose.releases.yaml"
-      - ".github/workflows/deploy-production.yml"
+  # CI-only maintenance can be deployed explicitly without restarting the API on every edit.
   workflow_dispatch:
 
 permissions:

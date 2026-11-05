@@ -14,7 +14,9 @@ import uuid
 
 PAGE = 'https://basokanggito.jevoncl.com'
 PACKAGE = 'id.basokanggito.app'
-ASSETS = ('index.html', 'site.css', 'site.js')
+CORE_ASSETS = ('index.html', 'site.css', 'site.js')
+ICONS = ('favicon.ico', 'favicon-32x32.png', 'apple-touch-icon.png')
+ASSETS = CORE_ASSETS + ICONS
 POLICY_KEYS = ('latestVersionCode', 'latestVersionName', 'minimumSupportedVersionCode', 'recommendedVersionCode',
                'allowMissingVersion', 'downloadPageUrl', 'releaseDate', 'downloadUrl', 'sha256', 'releaseNotes', 'mandatoryUpdateMessage')
 
@@ -145,7 +147,24 @@ def publish(state, stage):
     return commit(state, previous, next_policy, stage, stage)
 
 
-def commit(state, previous, policy, assets, stage):
+def publish_website(state, stage):
+    previous = current_target(state)
+    policy_path = state / previous / 'policy.json'
+    policy = policy_valid(read_json(policy_path))
+    verify_existing_artifact(state, policy)
+    require({entry.name for entry in stage.iterdir()} - {'receipt.json'} == set(ASSETS) and
+            all(entry.is_file() and not entry.is_symlink() for entry in stage.iterdir()),
+            'Website upload must contain only the public assets')
+    public = state / previous / 'public'
+    if all((public / asset).is_file() and digest(public / asset) == digest(stage / asset) for asset in ASSETS):
+        return {'changed': False, 'current': previous, 'previous': previous, 'policy': policy,
+                'policySha256': digest(policy_path)}
+    require(not (stage / 'receipt.json').exists(), 'Use a fresh upload after another generation is activated')
+    result = commit(state, previous, policy, stage, stage, policy_path)
+    return {**result, 'policySha256': digest(policy_path)}
+
+
+def commit(state, previous, policy, assets, stage, policy_source=None):
     generation = 'generations/' + uuid.uuid4().hex
     folder = state / generation
     public = folder / 'public'
@@ -153,11 +172,21 @@ def commit(state, previous, policy, assets, stage):
     public.chmod(0o755)
     folder.chmod(0o755)
     for asset in ASSETS:
+        # Older generations predate website icons; policy-only changes retain that tree.
+        if asset in ICONS and not (assets / asset).exists():
+            continue
         shutil.copyfile(assets / asset, public / asset)
         (public / asset).chmod(0o644)
         with (public / asset).open('rb') as source:
             os.fsync(source.fileno())
-    write_json(folder / 'policy.json', policy)
+    if policy_source is None:
+        write_json(folder / 'policy.json', policy)
+    else:
+        # Website updates preserve the full publisher-owned document byte for byte.
+        shutil.copyfile(policy_source, folder / 'policy.json')
+        (folder / 'policy.json').chmod(0o644)
+        with (folder / 'policy.json').open('rb') as source:
+            os.fsync(source.fileno())
     (public / 'version.json').symlink_to('../policy.json')
     (public / 'releases').symlink_to('../../../artifacts')
     (public / 'latest.apk').symlink_to('releases/' + filename(policy))
@@ -206,7 +235,7 @@ def rollback(state, stage):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=('publish', 'rollback', 'set-minimum'))
+    parser.add_argument('command', choices=('publish', 'publish-website', 'rollback', 'set-minimum'))
     parser.add_argument('--state-root', required=True)
     parser.add_argument('--stage')
     parser.add_argument('--minimum', type=int)
@@ -225,6 +254,8 @@ def main():
         fcntl.flock(lock, fcntl.LOCK_EX)
         if args.command == 'set-minimum':
             result = set_minimum(state, args.minimum, args.reject_missing)
+        elif args.command == 'publish-website':
+            result = publish_website(state, stage)
         else:
             result = publish(state, stage) if args.command == 'publish' else rollback(state, stage)
         print(json.dumps(result))

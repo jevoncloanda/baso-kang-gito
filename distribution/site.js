@@ -26,7 +26,8 @@ async function showRelease() {
     if (!Array.isArray(policy.releaseNotes) || !policy.releaseNotes.every(note => typeof note === 'string')) throw Error('Invalid notes');
     for (const note of policy.releaseNotes) { const li = document.createElement('li'); li.textContent = note; notes.append(li); }
     document.getElementById('notes-panel').hidden = !policy.releaseNotes.length;
-    status.textContent = 'APK rilis resmi. Unduh lalu pasang tanpa menghapus aplikasi lama.';
+    status.textContent = '';
+    status.hidden = true;
   } catch {
     document.getElementById('download').hidden = true;
     document.getElementById('details').hidden = true;
