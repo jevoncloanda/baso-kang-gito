@@ -22,11 +22,19 @@ $remoteAttempted = $false
 $remoteStage = $null
 
 function Invoke-Checked([string]$Command, [string[]]$ArgumentList) {
-    $output = & $Command @ArgumentList 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        throw "$Command failed (exit $LASTEXITCODE): $(@($output | Select-Object -Last 3) -join ' ')"
+    $stderrFile = [IO.Path]::GetTempFileName()
+    try {
+        $output = & $Command @ArgumentList 2> $stderrFile
+        $exitCode = $LASTEXITCODE
+        $diagnostic = [IO.File]::ReadAllText($stderrFile, [Text.Encoding]::UTF8).Trim()
+        if ($exitCode -ne 0) {
+            throw "$Command failed (exit ${exitCode}): $(@($output | Select-Object -Last 3) -join ' ') $diagnostic"
+        }
+        if ($diagnostic) { Write-Warning "$Command stderr: $diagnostic" }
+        return ($output | Out-String).Trim()
+    } finally {
+        Remove-Item -LiteralPath $stderrFile -Force
     }
-    return ($output | Out-String).Trim()
 }
 
 function Require([bool]$Condition, [string]$Message) {

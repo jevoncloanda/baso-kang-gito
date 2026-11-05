@@ -4,6 +4,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $global:publishTestRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 $global:publishTestCandidate = (Resolve-Path -LiteralPath $Candidate).Path
+$global:publishTestNativeNode = (Get-Command node -CommandType Application | Select-Object -First 1).Source
 $global:publishTestInfo = (& node (Join-Path $global:publishTestRoot 'backend/scripts/release.mjs') verify $global:publishTestCandidate | ConvertFrom-Json)
 if ($LASTEXITCODE -ne 0) { throw 'Real candidate verification failed' }
 $testFolder = Join-Path $global:publishTestRoot ('.releases/private/publisher-test-' + [guid]::NewGuid().ToString('N'))
@@ -43,7 +44,15 @@ function global:ssh {
     } elseif ($command -like '* publish *') {
         $global:publishTestActivation++
         if ($global:publishTestMode -eq 'remote') { $global:LASTEXITCODE = 1; 'Simulated remote failure'; return }
-        $global:publishTestPolicy | ConvertTo-Json -Depth 10 -Compress | ForEach-Object { '{"changed":true,"previous":"generations/bootstrap","policy":' + $_ + '}' }
+        $reply = '{"changed":true,"previous":"generations/bootstrap","policy":' + ($global:publishTestPolicy | ConvertTo-Json -Depth 10 -Compress) + '}'
+        if ($global:publishTestMode -in @('success-stderr', 'remote-stderr', 'malformed-stderr')) {
+            # Match Python json.dumps on the SSH publisher: Unicode is escaped on stdout.
+            $reply = [regex]::Replace($reply, '[^\x00-\x7F]', { param($match) '\u' + ([int][char]$match.Value).ToString('x4') })
+            if ($global:publishTestMode -eq 'malformed-stderr') { $reply += ' unexpected stdout' }
+            $exit = if ($global:publishTestMode -eq 'remote-stderr') { 23 } else { 0 }
+            & $global:publishTestNativeNode -e 'process.stdout.write(process.argv[1]+"\n");process.stderr.write("close - IO is still pending on closed socket.\n");process.exit(Number(process.argv[2]));' $reply $exit
+            $global:LASTEXITCODE = $LASTEXITCODE
+        } else { $reply }
     } else {
         $token = [regex]::Match($command, 'upload-[a-f0-9]{32}').Value
         Assert-Test ($token.Length -gt 0) 'Missing unique staging token'
@@ -73,7 +82,7 @@ function global:Invoke-WebRequest {
 
 try {
     $passed = 0
-    foreach ($mode in @('success', 'ssh', 'scp', 'remote', 'checksum', 'api')) {
+    foreach ($mode in @('success', 'success-stderr', 'ssh', 'scp', 'remote', 'remote-stderr', 'malformed-stderr', 'checksum', 'api')) {
         $global:publishTestMode = $mode
         $global:publishTestSsh = 0; $global:publishTestScp = 0; $global:publishTestActivation = 0; $global:publishTestRollback = 0
         $global:publishTestPolicy = Get-Content -LiteralPath (Join-Path $global:publishTestRoot 'backend/release-policy.json') -Raw | ConvertFrom-Json
@@ -84,12 +93,16 @@ try {
         $global:publishTestPolicy.releaseDate = '2026-11-04'
         $global:publishTestPolicy.downloadUrl = "https://basokanggito.jevoncl.com/releases/baso-kang-gito-v$($global:publishTestInfo.versionName)-$($global:publishTestInfo.versionCode).apk"
         $failed = $false
+        $failureMessage = ''
+        $caseLog = Join-Path $testFolder ($mode + '.log')
         try {
-            & (Join-Path $global:publishTestRoot 'backend/scripts/Publish-Cloudra.ps1') -SshHost test-cloudra -NotesFile $notesFile -Candidate $spacedCandidate -Publish *> $null
-        } catch { $failed = $true }
-        Assert-Test ($failed -eq ($mode -ne 'success')) "Unexpected result for $mode"
+            & (Join-Path $global:publishTestRoot 'backend/scripts/Publish-Cloudra.ps1') -SshHost test-cloudra -NotesFile $notesFile -Candidate $spacedCandidate -Publish *> $caseLog
+        } catch { $failed = $true; $failureMessage = $_.Exception.Message + ' ' + $_.ScriptStackTrace }
+        Assert-Test ($failed -eq ($mode -notin @('success', 'success-stderr'))) "Unexpected result for ${mode}: $failureMessage"
         Assert-Test ($global:publishTestSsh -gt 0) "SSH fake unused for $mode"
-        Assert-Test ($global:publishTestRollback -eq $(if ($mode -in @('remote', 'checksum', 'api')) { 1 } else { 0 })) "Incorrect rollback behavior for $mode"
+        Assert-Test ($global:publishTestRollback -eq $(if ($mode -in @('remote', 'remote-stderr', 'malformed-stderr', 'checksum', 'api')) { 1 } else { 0 })) "Incorrect rollback behavior for $mode"
+        if ($mode -eq 'remote-stderr') { Assert-Test ($failureMessage -match 'exit 23' -and $failureMessage -match 'IO is still pending') 'Nonzero SSH exit or stderr diagnostic was discarded' }
+        if ($mode -eq 'success-stderr') { Assert-Test ((Get-Content -LiteralPath $caseLog -Raw) -match 'IO is still pending') 'Successful SSH stderr diagnostic was discarded' }
         if ($mode -eq 'ssh') { Assert-Test ($global:publishTestScp -eq 0) 'Upload followed failed SSH preflight' }
         if ($mode -eq 'scp') { Assert-Test ($global:publishTestActivation -eq 0) 'Activation followed failed upload' }
         $passed++
