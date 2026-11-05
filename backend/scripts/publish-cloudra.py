@@ -156,12 +156,25 @@ def publish_website(state, stage):
             all(entry.is_file() and not entry.is_symlink() for entry in stage.iterdir()),
             'Website upload must contain only the public assets')
     public = state / previous / 'public'
-    if all((public / asset).is_file() and digest(public / asset) == digest(stage / asset) for asset in ASSETS):
+    if all((public / asset).is_file() and (public / asset).read_bytes() == website_asset(stage, asset) for asset in ASSETS):
         return {'changed': False, 'current': previous, 'previous': previous, 'policy': policy,
                 'policySha256': digest(policy_path)}
     require(not (stage / 'receipt.json').exists(), 'Use a fresh upload after another generation is activated')
     result = commit(state, previous, policy, stage, stage, policy_path)
     return {**result, 'policySha256': digest(policy_path)}
+
+
+def website_asset(assets, asset):
+    data = (assets / asset).read_bytes()
+    if asset == 'index.html':
+        # Cloudflare caches CSS, JS and icons. Each changed asset gets a fresh URL
+        # while the existing Caddy/Cloudflare cache policy remains untouched.
+        for name in ASSETS[1:]:
+            url = ('="/' + name + '"').encode()
+            if url in data:
+                versioned = ('="/' + name + '?v=' + digest(assets / name) + '"').encode()
+                data = data.replace(url, versioned)
+    return data
 
 
 def commit(state, previous, policy, assets, stage, policy_source=None):
@@ -175,7 +188,7 @@ def commit(state, previous, policy, assets, stage, policy_source=None):
         # Older generations predate website icons; policy-only changes retain that tree.
         if asset in ICONS and not (assets / asset).exists():
             continue
-        shutil.copyfile(assets / asset, public / asset)
+        (public / asset).write_bytes(website_asset(assets, asset))
         (public / asset).chmod(0o644)
         with (public / asset).open('rb') as source:
             os.fsync(source.fileno())

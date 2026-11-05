@@ -74,8 +74,21 @@ function Verify-Public($Info, $Policy, [string]$Folder) {
     Require ((Get-FileHash -LiteralPath $download -Algorithm SHA256).Hash.ToLowerInvariant() -ceq $Info.sha256) 'Public APK checksum mismatch'
     foreach ($asset in $assets) {
         $downloadedAsset = Join-Path $Folder ('public-' + $asset)
-        $null = Get-Public "$page/$asset`?verify=$nonce" $downloadedAsset
-        Require ((Get-FileHash -LiteralPath $downloadedAsset -Algorithm SHA256).Hash -ceq (Get-FileHash -LiteralPath (Join-Path $Folder $asset) -Algorithm SHA256).Hash) "Public asset checksum mismatch: $asset"
+        $expectedBytes = [IO.File]::ReadAllBytes((Join-Path $Folder $asset))
+        if ($asset -eq 'index.html') {
+            $html = $utf8.GetString($expectedBytes)
+            foreach ($linked in $assets | Where-Object { $_ -ne 'index.html' }) {
+                $hash = (Get-FileHash -LiteralPath (Join-Path $Folder $linked) -Algorithm SHA256).Hash.ToLowerInvariant()
+                $html = $html.Replace(('="/' + $linked + '"'), ('="/' + $linked + '?v=' + $hash + '"'))
+            }
+            $expectedBytes = $utf8.GetBytes($html)
+        }
+        $hasher = [Security.Cryptography.SHA256]::Create()
+        try { $expectedHash = ([BitConverter]::ToString($hasher.ComputeHash($expectedBytes))).Replace('-', '').ToLowerInvariant() }
+        finally { $hasher.Dispose() }
+        $url = if ($asset -eq 'index.html') { "$page/$asset" } else { "$page/$asset`?v=$expectedHash" }
+        $null = Get-Public $url $downloadedAsset
+        Require ((Get-FileHash -LiteralPath $downloadedAsset -Algorithm SHA256).Hash.ToLowerInvariant() -ceq $expectedHash) "Public asset checksum mismatch: $asset"
     }
 }
 

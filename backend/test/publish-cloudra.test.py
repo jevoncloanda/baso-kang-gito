@@ -3,6 +3,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import runpy
 import shutil
 import subprocess
 import sys
@@ -10,6 +11,7 @@ import tempfile
 import unittest
 from unittest import mock
 import uuid
+from urllib.parse import urlsplit
 
 SCRIPT = Path(__file__).resolve().parents[1] / 'scripts' / 'publish-cloudra.py'
 spec = importlib.util.spec_from_file_location('publisher', SCRIPT)
@@ -103,6 +105,54 @@ class PublishingTest(unittest.TestCase):
         self.run_cli('publish-website', self.website_stage())
         self.assertEqual((self.public_root / 'version.json').read_bytes(), raw)
         self.assertEqual(list((self.state / 'artifacts').iterdir()), [])
+
+    def test_asset_urls_follow_content_hashes_and_retry_is_idempotent(self):
+        stage = self.website_stage()
+        html = (SCRIPT.parents[2] / 'distribution/index.html').read_bytes()
+        (stage / 'index.html').write_bytes(html)
+        first = self.run_cli('publish-website', stage)
+        rendered = (self.public_root / 'index.html').read_bytes()
+        for asset in publisher.ASSETS[1:]:
+            self.assertIn(f'="/{asset}?v={publisher.digest(stage / asset)}"'.encode(), rendered)
+        self.assertFalse(self.run_cli('publish-website', stage)['changed'])
+        updated = self.website_stage()
+        (updated / 'index.html').write_bytes(html)
+        (updated / 'site.js').write_text('changed JavaScript')
+        self.run_cli('publish-website', updated)
+        self.assertNotEqual((self.public_root / 'index.html').read_bytes(), rendered)
+        self.assertEqual((self.state / first['current'] / 'public/index.html').read_bytes(), rendered)
+        self.assertFalse(self.run_cli('publish-website', updated)['changed'])
+
+    def test_public_gate_checks_rendered_html_exact_asset_urls_and_apk(self):
+        published = self.run_cli('publish', self.stage())
+        stage = self.website_stage()
+        (stage / 'index.html').write_bytes((SCRIPT.parents[2] / 'distribution/index.html').read_bytes())
+        result = self.run_cli('publish-website', stage)
+        gate = runpy.run_path(str(SCRIPT.with_name('verify-website.py')))
+        seen = []
+
+        def public_get(url, content_type=None):
+            parsed = urlsplit(url)
+            seen.append(parsed.path)
+            if parsed.path in ('/version.json', '/v1/app-version'):
+                path = self.state / 'current/policy.json'
+                return path.read_bytes(), publisher.digest(path), {'Cache-Control': 'no-store'}
+            if parsed.path == '/health':
+                return b'{"status":"ok"}', '', {}
+            if parsed.path.startswith('/releases/'):
+                return b'', published['policy']['sha256'], {'Cache-Control': 'public, immutable'}
+            asset = parsed.path[1:]
+            expected = publisher.website_asset(stage, asset)
+            sha = publisher.hashlib.sha256(expected).hexdigest()
+            self.assertEqual(parsed.query, '' if asset == 'index.html' else 'v=' + sha)
+            return expected, sha, {}
+
+        with mock.patch.dict(gate['verify'].__globals__, get=public_get):
+            gate['verify'](result, stage)
+        self.assertIn('/releases/' + publisher.filename(published['policy']), seen)
+        with mock.patch.dict(gate['verify'].__globals__, get=lambda *args: (b'wrong', '0' * 64, {'Cache-Control': 'no-store'})):
+            with self.assertRaisesRegex(ValueError, 'metadata bytes changed'):
+                gate['verify'](result, stage)
 
     def test_website_corrupt_artifact_and_activation_failure(self):
         self.run_cli('publish', self.stage())

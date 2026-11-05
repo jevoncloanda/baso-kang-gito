@@ -3,6 +3,7 @@
 import hashlib
 import json
 from pathlib import Path
+import runpy
 import sys
 import urllib.request
 import uuid
@@ -17,8 +18,8 @@ def require(condition, message):
 
 
 def get(url, expected_type=None):
-    request = urllib.request.Request(url, headers={'Cache-Control': 'no-cache'})
-    with urllib.request.urlopen(request, timeout=120) as response:
+    request = urllib.request.Request(url, headers={'Cache-Control': 'no-cache', 'User-Agent': 'Baso-Kang-Gito-Website-Verification/1.0'})
+    with urllib.request.urlopen(request, timeout=120 if expected_type == ('application/vnd.android.package-archive',) else 30) as response:
         require(response.status == 200 and response.url == url, 'Unexpected status or redirect: ' + url)
         if expected_type:
             require(response.headers.get_content_type() in expected_type, 'Unexpected content type: ' + url)
@@ -32,6 +33,7 @@ def get(url, expected_type=None):
 
 
 def verify(result, stage):
+    website_asset = runpy.run_path(str(Path(__file__).with_name('publish-cloudra.py')))['website_asset']
     nonce = '?verify=' + uuid.uuid4().hex
     raw, sha, headers = get(PAGE + '/version.json' + nonce, ('application/json',))
     require('no-store' in headers.get('Cache-Control', ''), 'version.json must use no-store')
@@ -47,8 +49,12 @@ def verify(result, stage):
               'favicon.ico': ('image/x-icon', 'image/vnd.microsoft.icon'),
               'favicon-32x32.png': ('image/png',), 'apple-touch-icon.png': ('image/png',)}
     for asset, content_types in assets.items():
-        _, actual, _ = get(PAGE + '/' + asset + nonce, content_types)
-        require(actual == hashlib.sha256((stage / asset).read_bytes()).hexdigest(), 'Public asset mismatch: ' + asset)
+        expected = hashlib.sha256(website_asset(stage, asset)).hexdigest()
+        url = PAGE + '/' + asset
+        if asset != 'index.html':
+            url += '?v=' + expected
+        _, actual, _ = get(url, content_types)
+        require(actual == expected, 'Public asset mismatch: ' + asset)
     if policy['downloadUrl'] is not None:
         _, actual, headers = get(policy['downloadUrl'], ('application/vnd.android.package-archive',))
         require(actual == policy['sha256'], 'Public APK checksum mismatch')

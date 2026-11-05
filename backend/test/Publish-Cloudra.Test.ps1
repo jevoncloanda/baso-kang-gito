@@ -76,6 +76,15 @@ function global:Invoke-WebRequest {
         $responseHeaders = @{ 'Content-Type' = 'application/vnd.android.package-archive'; 'Cache-Control' = 'public, max-age=31536000, immutable' }
     } else {
         Copy-Item -LiteralPath (Join-Path $global:publishTestRoot ('distribution' + $url.AbsolutePath)) -Destination $OutFile
+        if ($url.AbsolutePath -eq '/index.html') {
+            $encoding = New-Object System.Text.UTF8Encoding($false)
+            $html = $encoding.GetString([IO.File]::ReadAllBytes($OutFile))
+            foreach ($asset in @('site.css', 'site.js', 'favicon.ico', 'favicon-32x32.png', 'apple-touch-icon.png')) {
+                $hash = (Get-FileHash -LiteralPath (Join-Path $global:publishTestRoot "distribution/$asset") -Algorithm SHA256).Hash.ToLowerInvariant()
+                $html = $html.Replace(('="/' + $asset + '"'), ('="/' + $asset + '?v=' + $hash + '"'))
+            }
+            [IO.File]::WriteAllText($OutFile, $html, $encoding)
+        }
     }
     [pscustomobject]@{ StatusCode = 200; Headers = $responseHeaders; Content = $content }
 }
