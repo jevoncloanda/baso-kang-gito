@@ -49,11 +49,15 @@ def verify(result, stage):
               'favicon.ico': ('image/x-icon', 'image/vnd.microsoft.icon'),
               'favicon-32x32.png': ('image/png',), 'apple-touch-icon.png': ('image/png',)}
     for asset, content_types in assets.items():
-        expected = hashlib.sha256(website_asset(stage, asset)).hexdigest()
+        expected_bytes = website_asset(stage, asset)
+        expected = hashlib.sha256(expected_bytes).hexdigest()
         url = PAGE + ('/' if asset == 'index.html' else '/' + asset)
         if asset != 'index.html':
             url += '?v=' + expected
         body, actual, _ = get(url, content_types)
+        if asset == 'index.html' and actual != expected:
+            position = next((i for i, (left, right) in enumerate(zip(expected_bytes, body)) if left != right), min(len(expected_bytes), len(body)))
+            print(f'Homepage difference at byte {position}: expected {expected_bytes[position:position + 800]!r}; received {body[position:position + 800]!r}', file=sys.stderr)
         require(actual == expected, f'Public asset mismatch: {asset}; expected {expected}, got {actual}; '
                 + (repr(body[:240]) if asset == 'index.html' else url))
     if policy['downloadUrl'] is not None:
