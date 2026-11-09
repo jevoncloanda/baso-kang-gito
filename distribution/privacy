@@ -53,7 +53,7 @@
       <section aria-labelledby="contact-title">
         <h2 id="contact-title">Kontak</h2>
         <p>Untuk pertanyaan tentang kebijakan ini atau penggunaan data dalam aplikasi,
-          hubungi <a href="mailto:jevon.loanda@gmail.com">jevon.loanda@gmail.com</a>.</p>
+          hubungi <!--email_off--><a href="mailto:jevon.loanda@gmail.com">jevon.loanda@gmail.com</a><!--/email_off-->.</p>
       </section>
     </article>
   </main>
