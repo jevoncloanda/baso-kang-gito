@@ -8,7 +8,7 @@ token=${1:-$(python3 -c 'import uuid; print(uuid.uuid4().hex)')}
 stage="$state/staging/upload-$token"
 umask 022
 mkdir -- "$stage"
-cp -- distribution/index.html distribution/site.css distribution/site.js \
+cp -- distribution/index.html distribution/privacy distribution/site.css distribution/site.js \
   distribution/favicon.ico distribution/favicon-32x32.png distribution/apple-touch-icon.png "$stage/"
 attempted=false
 finish() {

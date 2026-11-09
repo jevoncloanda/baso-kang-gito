@@ -27,7 +27,7 @@ function global:scp {
     $global:publishTestScp++
     Assert-Test ($args -contains 'BatchMode=yes' -and $args -contains 'StrictHostKeyChecking=yes') 'SSH must fail closed'
     Assert-Test ($args[-1] -match '^test-cloudra:/srv/baso-kang-gito-release-state/staging/upload-[a-f0-9]{32}/$') 'Unsafe SCP destination'
-    foreach ($file in @('artifact.apk', 'manifest.json', 'index.html', 'site.css', 'site.js', 'favicon.ico', 'favicon-32x32.png', 'apple-touch-icon.png', 'publish-cloudra.py')) {
+    foreach ($file in @('artifact.apk', 'manifest.json', 'index.html', 'privacy', 'site.css', 'site.js', 'favicon.ico', 'favicon-32x32.png', 'apple-touch-icon.png', 'publish-cloudra.py')) {
         Assert-Test ($args -contains $file -and (Test-Path -LiteralPath $file)) "Missing upload file: $file"
     }
     $global:LASTEXITCODE = if ($global:publishTestMode -eq 'scp') { 1 } else { 0 }
@@ -77,7 +77,7 @@ function global:Invoke-WebRequest {
     } else {
         $assetPath = if ($url.AbsolutePath -eq '/') { '/index.html' } else { $url.AbsolutePath }
         Copy-Item -LiteralPath (Join-Path $global:publishTestRoot ('distribution' + $assetPath)) -Destination $OutFile
-        if ($assetPath -eq '/index.html') {
+        if ($assetPath -in @('/index.html', '/privacy')) {
             $encoding = New-Object System.Text.UTF8Encoding($false)
             $html = $encoding.GetString([IO.File]::ReadAllBytes($OutFile))
             foreach ($asset in @('site.css', 'site.js', 'favicon.ico', 'favicon-32x32.png', 'apple-touch-icon.png')) {

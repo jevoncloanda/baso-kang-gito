@@ -103,7 +103,7 @@ def verify(result, stage):
     server = json.loads(server)
     require(all(server[key] == value for key, value in result['policy'].items()), 'API compatibility policy mismatch')
     get(API + '/health', ('application/json',))
-    assets = {'index.html': ('text/html',), 'site.css': ('text/css',),
+    assets = {'index.html': ('text/html',), 'privacy': ('text/html',), 'site.css': ('text/css',),
               'site.js': ('text/javascript', 'application/javascript'),
               'favicon.ico': ('image/x-icon', 'image/vnd.microsoft.icon'),
               'favicon-32x32.png': ('image/png',), 'apple-touch-icon.png': ('image/png',)}
@@ -111,11 +111,11 @@ def verify(result, stage):
         expected_bytes = website_asset(stage, asset)
         expected = hashlib.sha256(expected_bytes).hexdigest()
         url = PAGE + ('/' if asset == 'index.html' else '/' + asset)
-        if asset != 'index.html':
+        if asset not in ('index.html', 'privacy'):
             url += '?v=' + expected
         body, actual, _ = get(url, content_types)
-        if asset == 'index.html':
-            require(html_signature(body) == html_signature(expected_bytes), 'Public homepage content or asset references mismatch')
+        if asset in ('index.html', 'privacy'):
+            require(html_signature(body) == html_signature(expected_bytes), f'Public page content or asset references mismatch: {asset}')
         else:
             require(actual == expected, f'Public asset mismatch: {asset}; expected {expected}, got {actual}')
     if policy['downloadUrl'] is not None:

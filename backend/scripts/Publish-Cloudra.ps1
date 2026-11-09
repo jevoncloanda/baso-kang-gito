@@ -14,7 +14,7 @@ $ErrorActionPreference = 'Stop'
 $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 $page = 'https://basokanggito.jevoncl.com'
 $api = 'https://basokanggito-api.jevoncl.com/v1/app-version'
-$assets = @('index.html', 'site.css', 'site.js', 'favicon.ico', 'favicon-32x32.png', 'apple-touch-icon.png')
+$assets = @('index.html', 'site.css', 'site.js', 'favicon.ico', 'favicon-32x32.png', 'apple-touch-icon.png', 'privacy')
 $sshOptions = @('-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes', '-o', 'ConnectTimeout=15')
 $utf8 = New-Object System.Text.UTF8Encoding($false)
 $upload = $null
@@ -75,9 +75,9 @@ function Verify-Public($Info, $Policy, [string]$Folder) {
     foreach ($asset in $assets) {
         $downloadedAsset = Join-Path $Folder ('public-' + $asset)
         $expectedBytes = [IO.File]::ReadAllBytes((Join-Path $Folder $asset))
-        if ($asset -eq 'index.html') {
+        if ($asset -in @('index.html', 'privacy')) {
             $html = $utf8.GetString($expectedBytes)
-            foreach ($linked in $assets | Where-Object { $_ -ne 'index.html' }) {
+            foreach ($linked in $assets | Where-Object { $_ -notin @('index.html', 'privacy') }) {
                 $hash = (Get-FileHash -LiteralPath (Join-Path $Folder $linked) -Algorithm SHA256).Hash.ToLowerInvariant()
                 $html = $html.Replace(('="/' + $linked + '"'), ('="/' + $linked + '?v=' + $hash + '"'))
             }
@@ -86,10 +86,16 @@ function Verify-Public($Info, $Policy, [string]$Folder) {
         $hasher = [Security.Cryptography.SHA256]::Create()
         try { $expectedHash = ([BitConverter]::ToString($hasher.ComputeHash($expectedBytes))).Replace('-', '').ToLowerInvariant() }
         finally { $hasher.Dispose() }
-        $url = if ($asset -eq 'index.html') { "$page/" } else { "$page/$asset`?v=$expectedHash" }
+        $url = if ($asset -eq 'index.html') {
+            "$page/"
+        } elseif ($asset -eq 'privacy') {
+            "$page/privacy"
+        } else {
+            "$page/$asset`?v=$expectedHash"
+        }
         $null = Get-Public $url $downloadedAsset
         $actualBytes = [IO.File]::ReadAllBytes($downloadedAsset)
-        if ($asset -eq 'index.html') {
+        if ($asset -in @('index.html', 'privacy')) {
             $html = $utf8.GetString($actualBytes)
             $beacon = [regex]::Match($html, '<script type="module" src="https://static\.cloudflareinsights\.com/beacon\.min\.js/v[a-f0-9]+" integrity="sha512-[A-Za-z0-9+/]{86}==" data-cf-beacon=''({[^<>\r\n]*})'' crossorigin="anonymous"></script>\n(?=</body>\n</html>\n\z)')
             if ($beacon.Success) {

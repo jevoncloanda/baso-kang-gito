@@ -112,7 +112,7 @@ class PublishingTest(unittest.TestCase):
         (stage / 'index.html').write_bytes(html)
         first = self.run_cli('publish-website', stage)
         rendered = (self.public_root / 'index.html').read_bytes()
-        for asset in publisher.ASSETS[1:]:
+        for asset in publisher.CORE_ASSETS[1:] + publisher.ICONS:
             self.assertIn(f'="/{asset}?v={publisher.digest(stage / asset)}"'.encode(), rendered)
         self.assertFalse(self.run_cli('publish-website', stage)['changed'])
         updated = self.website_stage()
@@ -144,17 +144,18 @@ class PublishingTest(unittest.TestCase):
             asset = 'index.html' if parsed.path == '/' else parsed.path[1:]
             expected = publisher.website_asset(stage, asset)
             sha = publisher.hashlib.sha256(expected).hexdigest()
-            self.assertEqual(parsed.query, '' if asset == 'index.html' else 'v=' + sha)
+            self.assertEqual(parsed.query, '' if asset in ('index.html', 'privacy') else 'v=' + sha)
             return expected, sha, {}
 
         with mock.patch.dict(gate['verify'].__globals__, get=public_get):
             gate['verify'](result, stage)
         self.assertIn('/releases/' + publisher.filename(published['policy']), seen)
+        self.assertIn('/privacy', seen)
         with mock.patch.dict(gate['verify'].__globals__, get=lambda *args: (b'wrong', '0' * 64, {'Cache-Control': 'no-store'})):
             with self.assertRaisesRegex(ValueError, 'metadata bytes changed'):
                 gate['verify'](result, stage)
 
-        for path in ('/', '/site.css', '/site.js', '/favicon.ico', '/favicon-32x32.png', '/apple-touch-icon.png',
+        for path in ('/', '/privacy', '/site.css', '/site.js', '/favicon.ico', '/favicon-32x32.png', '/apple-touch-icon.png',
                      '/releases/' + publisher.filename(published['policy'])):
             with self.subTest(corrupt_path=path):
                 def corrupted_get(url, content_type=None):
@@ -165,6 +166,31 @@ class PublishingTest(unittest.TestCase):
                 with mock.patch.dict(gate['verify'].__globals__, get=corrupted_get):
                     with self.assertRaises(ValueError):
                         gate['verify'](result, stage)
+
+    def test_privacy_page_is_versioned_preserved_and_rolled_back_with_website(self):
+        self.run_cli('publish', self.stage())
+        stage = self.website_stage()
+        source = (SCRIPT.parents[2] / 'distribution/privacy').read_bytes()
+        (stage / 'privacy').write_bytes(source)
+        result = self.run_cli('publish-website', stage)
+        rendered = (self.public_root / 'privacy').read_bytes()
+        self.assertIn(('/site.css?v=' + publisher.digest(stage / 'site.css')).encode(), rendered)
+        self.assertIn(b'mailto:jevon.loanda@gmail.com', rendered)
+        self.assertFalse(self.run_cli('publish-website', stage)['changed'])
+        publisher.set_minimum(self.state, 2, True)
+        self.assertEqual((self.public_root / 'privacy').read_bytes(), rendered)
+        # Restore the website generation before testing its receipt-based rollback.
+        publisher.activate(self.state, result['current'])
+        self.run_cli('rollback', stage)
+        self.assertEqual((self.public_root / 'privacy').read_text(), 'fixture privacy')
+
+    def test_policy_only_update_supports_generation_without_privacy(self):
+        self.run_cli('publish', self.stage())
+        (self.public_root / 'privacy').unlink()
+        result = publisher.set_minimum(self.state, 2, True)
+        self.assertFalse((self.public_root / 'privacy').exists())
+        self.run_cli('rollback', Path(result['receipt']).parent)
+        self.assertFalse((self.public_root / 'privacy').exists())
 
     def test_html_signature_allows_analytics_and_formatting_but_rejects_stale_or_changed_content(self):
         gate = runpy.run_path(str(SCRIPT.with_name('verify-website.py')))

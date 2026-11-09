@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#303b53">
+  <meta name="description" content="Kebijakan privasi aplikasi Baso Kang Gito dan rencana pencadangan database ke Google Drive.">
+  <title>Kebijakan Privasi — Baso Kang Gito</title>
+  <link rel="icon" href="/favicon.ico" sizes="16x16 32x32 48x48">
+  <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
+  <link rel="stylesheet" href="/site.css">
+</head>
+<body>
+  <header><a class="brand" href="/">Baso Kang Gito</a></header>
+  <main>
+    <article class="privacy" aria-labelledby="title">
+      <h1 id="title">Kebijakan Privasi</h1>
+      <p class="small">Berlaku sejak <time datetime="2026-11-09">9 November 2026</time></p>
+      <section aria-labelledby="application-title">
+        <h2 id="application-title">Tentang aplikasi</h2>
+        <p>Baso Kang Gito adalah aplikasi pembukuan privat untuk mencatat transaksi usaha
+          keluarga Baso Kang Gito. Kebijakan ini menjelaskan penggunaan catatan aplikasi dan
+          rencana integrasi Google Drive melalui aplikasi OAuth “Baso Kang Gito Backups”.</p>
+      </section>
+      <section aria-labelledby="records-title">
+        <h2 id="records-title">Catatan yang disimpan</h2>
+        <p>Aplikasi menyimpan catatan operasional yang dimasukkan pengguna, termasuk penjualan,
+          pengeluaran, informasi pelanggan, dan transaksi keuangan. Catatan aplikasi disimpan
+          pada perangkat dan disinkronkan dengan backend serta database PostgreSQL yang
+          digunakan Baso Kang Gito.</p>
+      </section>
+      <section aria-labelledby="backup-title">
+        <h2 id="backup-title">Rencana pencadangan ke Google Drive</h2>
+        <p>Salinan cadangan database dapat mencakup catatan operasional tersebut. Integrasi yang
+          sedang dikonfigurasi direncanakan menggunakan rclone untuk menyimpan cadangan database
+          di Google Drive, dengan tujuan pemulihan setelah gangguan atau kehilangan data dan
+          pemulihan catatan aplikasi.</p>
+        <p>Cadangan direncanakan dienkripsi sebelum diunggah menggunakan rclone crypt.
+          Konfigurasi pencadangan ke Google Drive, enkripsi, dan otomatisasinya masih dalam
+          proses penyiapan.</p>
+      </section>
+      <section aria-labelledby="google-title">
+        <h2 id="google-title">Izin akun Google</h2>
+        <p>Akses Google Drive diotorisasi oleh pemilik akun melalui Google OAuth. Integrasi
+          Google Drive ditujukan untuk penyimpanan cadangan dan pemulihan data. Integrasi ini
+          tidak digunakan untuk iklan atau pemasaran.</p>
+        <p>Pemilik akun dapat mencabut akses OAuth “Baso Kang Gito Backups” melalui
+          <a href="https://myaccount.google.com/connections">pengaturan koneksi pihak ketiga
+          di Akun Google</a>. Setelah akses dicabut, proses pencadangan atau pemulihan yang
+          memerlukan akses tersebut perlu diotorisasi kembali.</p>
+      </section>
+      <section aria-labelledby="contact-title">
+        <h2 id="contact-title">Kontak</h2>
+        <p>Untuk pertanyaan tentang kebijakan ini atau penggunaan data dalam aplikasi,
+          hubungi <a href="mailto:jevon.loanda@gmail.com">jevon.loanda@gmail.com</a>.</p>
+      </section>
+    </article>
+  </main>
+  <footer><a href="/">Kembali ke halaman download</a></footer>
+</body>
+</html>

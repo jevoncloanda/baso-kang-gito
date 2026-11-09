@@ -1,7 +1,7 @@
 :root { color-scheme: light; --slate: #303b53; --text: #253047; --ivory: #f8f5f1; --accent: #bd6254; --line: #d6d6d9; }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--ivory); color: var(--text); font: 18px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif; }
-header, main { width: min(100% - 40px, 560px); margin-inline: auto; }
+header, main, footer { width: min(100% - 40px, 560px); margin-inline: auto; }
 header { padding-block: 24px; border-bottom: 1px solid var(--line); }
 a { color: var(--slate); text-underline-offset: 4px; }
 .brand { display: inline-flex; align-items: center; min-height: 48px; font-size: 23px; font-weight: 750; text-decoration: none; }
@@ -21,5 +21,9 @@ summary { display: list-item; align-content: center; min-height: 48px; cursor: p
 .instructions { margin-top: 32px; padding-top: 24px; border-top: 1px solid var(--line); }
 .instructions ol { margin: 12px 0 0; padding-left: 24px; }
 .instructions li { padding: 4px 0 4px 4px; }
+footer { padding-block: 16px 24px; border-top: 1px solid var(--line); font-size: 16px; }
+footer a { display: inline-flex; align-items: center; min-height: 48px; }
+.privacy { display: grid; gap: 24px; overflow-wrap: anywhere; }
+.privacy section { display: grid; gap: 12px; }
 ::selection { background: var(--slate); color: #fff; }
 [hidden] { display: none !important; }

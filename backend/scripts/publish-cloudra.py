@@ -16,7 +16,7 @@ PAGE = 'https://basokanggito.jevoncl.com'
 PACKAGE = 'id.basokanggito.app'
 CORE_ASSETS = ('index.html', 'site.css', 'site.js')
 ICONS = ('favicon.ico', 'favicon-32x32.png', 'apple-touch-icon.png')
-ASSETS = CORE_ASSETS + ICONS
+ASSETS = CORE_ASSETS + ICONS + ('privacy',)
 POLICY_KEYS = ('latestVersionCode', 'latestVersionName', 'minimumSupportedVersionCode', 'recommendedVersionCode',
                'allowMissingVersion', 'downloadPageUrl', 'releaseDate', 'downloadUrl', 'sha256', 'releaseNotes', 'mandatoryUpdateMessage')
 
@@ -166,10 +166,10 @@ def publish_website(state, stage):
 
 def website_asset(assets, asset):
     data = (assets / asset).read_bytes()
-    if asset == 'index.html':
+    if asset in ('index.html', 'privacy'):
         # Cloudflare caches CSS, JS and icons. Each changed asset gets a fresh URL
         # while the existing Caddy/Cloudflare cache policy remains untouched.
-        for name in ASSETS[1:]:
+        for name in CORE_ASSETS[1:] + ICONS:
             url = ('="/' + name + '"').encode()
             if url in data:
                 versioned = ('="/' + name + '?v=' + digest(assets / name) + '"').encode()
@@ -185,8 +185,8 @@ def commit(state, previous, policy, assets, stage, policy_source=None):
     public.chmod(0o755)
     folder.chmod(0o755)
     for asset in ASSETS:
-        # Older generations predate website icons; policy-only changes retain that tree.
-        if asset in ICONS and not (assets / asset).exists():
+        # Policy-only changes retain older trees that predate icons or the privacy page.
+        if asset in ICONS + ('privacy',) and not (assets / asset).exists():
             continue
         (public / asset).write_bytes(website_asset(assets, asset))
         (public / asset).chmod(0o644)
