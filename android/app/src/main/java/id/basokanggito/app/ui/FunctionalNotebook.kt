@@ -66,6 +66,8 @@ fun FunctionalNotebook(journalReset: String = "", navigationSession: String = ""
         }
     }
     var monthText by rememberSaveable { mutableStateOf(YearMonth.from(businessToday()).toString()) }
+    var shoppingMonthText by rememberSaveable { mutableStateOf(YearMonth.from(businessToday()).toString()) }
+    var shoppingSpendKey by rememberSaveable { mutableStateOf("") }
     var selectedId by rememberSaveable { mutableStateOf("") }
     var selectedCustomerId by rememberSaveable { mutableStateOf("") }
     var customerDraft by rememberSaveable { mutableStateOf("") }
@@ -188,8 +190,10 @@ fun FunctionalNotebook(journalReset: String = "", navigationSession: String = ""
                 runCatching {
                     val draft = JSONObject(raw)
                     restoreDraft(draft)
-                    route = draft.getString("route").takeIf { it in listOf("sale", "expense", "receipt") } ?: "journal"
-                    if (baseVersion == 0 && state.records.any { it.id == recordId }) { selectedId = recordId; route = "detail" }
+                    if (route != "shopping_recap") {
+                        route = draft.getString("route").takeIf { it in listOf("sale", "expense", "receipt") } ?: "journal"
+                        if (baseVersion == 0 && state.records.any { it.id == recordId }) { selectedId = recordId; route = "detail" }
+                    }
                 }.onFailure { model.error.value = "draft_unreadable" }
             }
             metadata["paymentRecovery"]?.takeIf { it.isNotEmpty() }?.let { raw ->
@@ -257,6 +261,10 @@ fun FunctionalNotebook(journalReset: String = "", navigationSession: String = ""
     }
     fun back() {
         keyboard?.hide()
+        if (route == "shopping_recap") {
+            if (shoppingSpendKey.isEmpty()) route = "journal" else shoppingSpendKey = ""
+            return
+        }
         route = when (route) {
             "customer_form" -> JSONObject(customerDraft).optString("returnTo", "customers")
             "customer_picker" -> "sale"
@@ -301,7 +309,7 @@ fun FunctionalNotebook(journalReset: String = "", navigationSession: String = ""
     val entries = presentation(state)
     val selected = state.records.find { it.id == selectedId }
     val date = LocalDate.parse(if (route == "journal") journalDateText else dateText)
-    val nested = route in listOf("sale", "expense", "receipt", "detail", "customer_form", "customer_picker", "catalog_picker") || (route == "customers" && selectedCustomerId.isNotEmpty())
+    val nested = route in listOf("sale", "expense", "receipt", "detail", "customer_form", "customer_picker", "catalog_picker", "shopping_recap") || (route == "customers" && selectedCustomerId.isNotEmpty())
     val customerNavigation = route in listOf("customers", "customer_form", "customer_picker") || (route in listOf("detail", "receipt") && detailReturn == "customers")
     fun navigationIcon(destination: String) = when (destination) { "journal" -> R.drawable.ic_book; "customers" -> R.drawable.ic_customers; else -> R.drawable.ic_chart }
     val formError = financialError(error)
@@ -320,7 +328,22 @@ fun FunctionalNotebook(journalReset: String = "", navigationSession: String = ""
                 Column(Modifier.statusBarsPadding()) {
                     Row(Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(horizontal = Space.medium, vertical = Space.tiny), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Space.small)) {
                         if (nested) IconButton(onClick = ::back, enabled = !saving, modifier = Modifier.size(48.dp)) { AppIcon(R.drawable.ic_back, description = stringResource(R.string.back)) }
-                        Text(stringResource(when (route) { "sale" -> if (baseVersion > 0 || recoveredEdit.isNotEmpty()) R.string.edit_sale else R.string.add_sale; "expense" -> if (baseVersion > 0 || recoveredEdit.isNotEmpty()) R.string.edit_shopping else R.string.add_shopping; "receipt" -> R.string.add_receipt; "detail" -> R.string.details; "recap" -> R.string.monthly_recap; "customers" -> R.string.customers_bon; "customer_picker" -> R.string.select_customer; "customer_form" -> R.string.customer_details; else -> R.string.daily_book }), style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+                        Text(
+                            stringResource(when (route) {
+                                "sale" -> if (baseVersion > 0 || recoveredEdit.isNotEmpty()) R.string.edit_sale else R.string.add_sale
+                                "expense" -> if (baseVersion > 0 || recoveredEdit.isNotEmpty()) R.string.edit_shopping else R.string.add_shopping
+                                "receipt" -> R.string.add_receipt
+                                "detail" -> R.string.details
+                                "recap" -> R.string.monthly_recap
+                                "shopping_recap" -> R.string.shopping_recap_title
+                                "customers" -> R.string.customers_bon
+                                "customer_picker" -> R.string.select_customer
+                                "customer_form" -> R.string.customer_details
+                                else -> R.string.daily_book
+                            }),
+                            style = MaterialTheme.typography.titleLarge,
+                            modifier = Modifier.weight(1f),
+                        )
                         LanguageMenu()
                         TextButton(onClick = { keyboard?.hide(); securityScreen = "tools" }) { Text(stringResource(R.string.backup_menu)) }
                     }
@@ -439,13 +462,40 @@ fun FunctionalNotebook(journalReset: String = "", navigationSession: String = ""
                                 model.submitCustomer(draft.getString("id"), draft.getInt("version"), data)
                             })
                         "recap" -> MonthlyRecap(entries, YearMonth.parse(monthText), { monthText = it.toString() }, realRecords = state.records) { journalDateText = it; route = "journal" }
+                        "shopping_recap" -> ShoppingRecapScreen(
+                            records = state.records,
+                            catalog = state.catalog,
+                            month = YearMonth.parse(shoppingMonthText),
+                            onMonth = { shoppingMonthText = it.toString() },
+                            selectedKey = shoppingSpendKey,
+                            onSelectItem = { shoppingSpendKey = it },
+                        )
                         else -> Column(Modifier.fillMaxSize()) {
                             if (draftKind.isNotEmpty() || createSale.isNotEmpty() || createExpense.isNotEmpty() || customerDraft.isNotEmpty()) {
                                 TextButton(onClick = ::resumeDraft, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp)) { Text(stringResource(R.string.resume_notebook_draft)) }
                             }
                             if (formError.isNotEmpty()) Text(formError, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(horizontal = 20.dp))
-                            Box(Modifier.weight(1f)) { Journal(entries.filter { it.date == journalDateText }, LocalDate.parse(journalDateText), { journalDateText = it.toString() }, { begin("sale") }, { begin("expense") },
-                                { selectedId = it.receiptFor.ifEmpty { it.id }; detailReturn = "journal"; route = "detail"; notice = false }, realTotals = totals(state.records, journalDateText, LocalDate.parse(journalDateText).plusDays(1).toString())) }
+                            Box(Modifier.weight(1f)) {
+                                val journalDate = LocalDate.parse(journalDateText)
+                                Journal(
+                                    entries = entries.filter { it.date == journalDateText },
+                                    date = journalDate,
+                                    onDate = { journalDateText = it.toString() },
+                                    onSale = { begin("sale") },
+                                    onExpense = { begin("expense") },
+                                    onEntry = {
+                                        selectedId = it.receiptFor.ifEmpty { it.id }
+                                        detailReturn = "journal"
+                                        route = "detail"
+                                        notice = false
+                                    },
+                                    realTotals = totals(state.records, journalDateText, journalDate.plusDays(1).toString()),
+                                    onShoppingRecap = {
+                                        shoppingSpendKey = ""
+                                        route = "shopping_recap"
+                                    },
+                                )
+                            }
                         }
                     }
                     if (saving) LinearProgressIndicator(Modifier.fillMaxWidth().align(Alignment.TopCenter))

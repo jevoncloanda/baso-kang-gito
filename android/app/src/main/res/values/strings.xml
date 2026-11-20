@@ -22,6 +22,13 @@
     <string name="pin_backspace">Delete last digit</string>
     <string name="pin_verifying">Checking PIN…</string>
     <string name="shopping_total">Shopping total</string>
+    <string name="shopping_recap_title">Monthly Shopping Recap</string>
+    <string name="shopping_recap_choose_month">Choose month</string>
+    <string name="shopping_recap_choose_year">Choose year</string>
+    <string name="shopping_recap_unattributed">Other shopping / Unitemized</string>
+    <string name="shopping_recap_empty">No shopping recorded for this month.</string>
+    <string name="shopping_recap_purchases">Purchases</string>
+    <string name="shopping_recap_no_purchases">No purchases remain for this item in the selected month.</string>
     <string name="shopping_items">Shopping items</string>
     <string name="backup_menu">Tools</string>
     <string name="tools_title">Tools &amp; settings</string>

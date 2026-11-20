@@ -45,7 +45,7 @@ fun SaleForm(date: LocalDate, draft: SaleDraft, onChange: (SaleDraft) -> Unit, s
             Text(stringResource(R.string.channel_label), style = MaterialTheme.typography.titleMedium)
             if (draft.channel == "GoFood") Text(channelLabel(draft.channel), style = MaterialTheme.typography.bodyMedium)
             ChannelSelection(draft.channel) { channel ->
-                onChange(draft.copy(channel = channel, paid = channel == "Langsung", customerId = if (channel == "Langsung") draft.customerId else null, paymentAmount = ""))
+                onChange(draft.withChannel(channel))
             }
         }
         if (draft.channel != "Langsung") Text(stringResource(if (real) R.string.platform_real_hint else R.string.platform_hint), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)

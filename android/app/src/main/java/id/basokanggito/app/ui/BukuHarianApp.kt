@@ -30,7 +30,16 @@ import id.basokanggito.app.data.BookTotals
 import id.basokanggito.app.data.totals
 
 @Composable
-internal fun Journal(entries: List<JournalEntry>, date: LocalDate, onDate: (LocalDate) -> Unit, onSale: () -> Unit, onExpense: () -> Unit, onEntry: (JournalEntry) -> Unit, realTotals: BookTotals? = null) {
+internal fun Journal(
+    entries: List<JournalEntry>,
+    date: LocalDate,
+    onDate: (LocalDate) -> Unit,
+    onSale: () -> Unit,
+    onExpense: () -> Unit,
+    onEntry: (JournalEntry) -> Unit,
+    realTotals: BookTotals? = null,
+    onShoppingRecap: (() -> Unit)? = null,
+) {
     BoxWithConstraints(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
         val split = maxWidth >= 840.dp
         Column(Modifier.widthIn(max = 1200.dp).fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = Space.medium, vertical = Space.small), verticalArrangement = Arrangement.spacedBy(Space.small)) {
@@ -39,7 +48,7 @@ internal fun Journal(entries: List<JournalEntry>, date: LocalDate, onDate: (Loca
                 Row(Modifier.fillMaxWidth().testTag("journal-expanded"), horizontalArrangement = Arrangement.spacedBy(Space.section), verticalAlignment = Alignment.Top) {
                     Column(Modifier.width(320.dp), verticalArrangement = Arrangement.spacedBy(Space.medium)) {
                         Summary(entries, realTotals)
-                        EntryActions(onSale, onExpense)
+                        EntryActions(onSale, onExpense, onShoppingRecap)
                         if (realTotals != null) ChannelSummary(entries)
                     }
                     History(entries, Modifier.weight(1f), onEntry, real = realTotals != null)
@@ -47,7 +56,7 @@ internal fun Journal(entries: List<JournalEntry>, date: LocalDate, onDate: (Loca
             } else {
                 Column(Modifier.testTag("journal-compact"), verticalArrangement = Arrangement.spacedBy(Space.medium)) {
                     Summary(entries, realTotals)
-                    EntryActions(onSale, onExpense)
+                    EntryActions(onSale, onExpense, onShoppingRecap)
                     if (realTotals != null) ChannelSummary(entries)
                     History(entries, onEntry = onEntry, real = realTotals != null)
                 }
@@ -113,7 +122,7 @@ internal fun MoneyRow(label: String, amount: Number) {
 }
 
 @Composable
-internal fun EntryActions(onSale: () -> Unit, onExpense: () -> Unit) {
+internal fun EntryActions(onSale: () -> Unit, onExpense: () -> Unit, onShoppingRecap: (() -> Unit)? = null) {
     val sale: @Composable (Modifier) -> Unit = { modifier ->
         Button(onClick = onSale, shape = MaterialTheme.shapes.medium, modifier = modifier.heightIn(min = 56.dp)) {
             AppIcon(R.drawable.ic_add); Spacer(Modifier.width(Space.small)); Text(stringResource(R.string.add_sale))
@@ -129,6 +138,16 @@ internal fun EntryActions(onSale: () -> Unit, onExpense: () -> Unit) {
     BoxWithConstraints(Modifier.fillMaxWidth()) {
         if (maxWidth >= 340.dp && LocalDensity.current.fontScale <= 1.3f) Row(horizontalArrangement = Arrangement.spacedBy(Space.small)) { sale(Modifier.weight(1f)); shopping(Modifier.weight(1f)) }
         else Column(verticalArrangement = Arrangement.spacedBy(Space.small)) { sale(Modifier.fillMaxWidth()); shopping(Modifier.fillMaxWidth()) }
+    }
+    if (onShoppingRecap != null) {
+        OutlinedButton(
+            onClick = onShoppingRecap,
+            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+        ) {
+            AppIcon(R.drawable.ic_chart)
+            Spacer(Modifier.width(Space.small))
+            Text(stringResource(R.string.shopping_recap_title))
+        }
     }
 }
 

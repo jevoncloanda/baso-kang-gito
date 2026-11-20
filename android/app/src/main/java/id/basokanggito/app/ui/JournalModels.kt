@@ -30,7 +30,13 @@ data class SaleDraft(
     val amount: String = "", val customer: String = "", val channel: String = "Langsung",
     val paid: Boolean = true, val note: String = "", val method: String = "cash",
     val customerId: String? = null, val paymentAmount: String = "",
-) : Serializable
+) : Serializable {
+    fun withChannel(channel: String): SaleDraft = copy(
+        channel = channel,
+        customerId = customerId.takeIf { channel == "Langsung" },
+        paymentAmount = "",
+    )
+}
 
 data class ExpenseDraftLine(val id: String, val name: String = "", val amount: String = "", val masterId: String? = null) : Serializable
 

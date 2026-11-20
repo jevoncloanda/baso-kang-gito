@@ -112,9 +112,18 @@ function Verify-Public($Info, $Policy, [string]$Folder) {
             }
         }
         $hasher = [Security.Cryptography.SHA256]::Create()
-        try { $actualHash = ([BitConverter]::ToString($hasher.ComputeHash($actualBytes))).Replace('-', '').ToLowerInvariant() }
+        try {
+            $actualHash = ([BitConverter]::ToString($hasher.ComputeHash($actualBytes))).Replace('-', '').ToLowerInvariant()
+            $contentMatches = $actualHash -ceq $expectedHash
+            if (-not $contentMatches -and $asset -eq 'privacy') {
+                # Cloudflare consumes these comments while leaving the marked contact link intact.
+                $edgeHtml = $utf8.GetString($expectedBytes).Replace('<!--email_off-->', '').Replace('<!--/email_off-->', '')
+                $edgeHash = ([BitConverter]::ToString($hasher.ComputeHash($utf8.GetBytes($edgeHtml)))).Replace('-', '').ToLowerInvariant()
+                $contentMatches = $actualHash -ceq $edgeHash
+            }
+        }
         finally { $hasher.Dispose() }
-        Require ($actualHash -ceq $expectedHash) "Public asset checksum mismatch: $asset"
+        Require $contentMatches "Public asset checksum mismatch: $asset"
     }
 }
 

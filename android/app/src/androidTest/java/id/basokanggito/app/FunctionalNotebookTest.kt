@@ -22,7 +22,10 @@ import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import id.basokanggito.app.data.*
 import kotlinx.coroutines.runBlocking
 import org.junit.*
+import org.json.JSONArray
 import org.json.JSONObject
+import java.time.format.TextStyle
+import java.util.Locale
 
 class FunctionalNotebookTest {
     @get:Rule val compose = createAndroidComposeRule<ComponentActivity>()
@@ -32,6 +35,70 @@ class FunctionalNotebookTest {
         compose.activityRule.scenario.onActivity { it.window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
     }
     private fun awaitText(text: String) { compose.waitUntil(10_000) { compose.onAllNodesWithText(text).fetchSemanticsNodes().isNotEmpty() } }
+
+    @Test
+    fun newSalesKeepMoneyReceivedAcrossChannelChanges() {
+        compose.setContent { BasoTheme { FunctionalNotebook() } }
+        awaitText("Add sale")
+        compose.onNodeWithText("Add sale").performScrollTo().performClick()
+        val moneyReceived = compose.onNodeWithText("Money received")
+        moneyReceived.performScrollTo().assertIsOn()
+        val platforms = listOf("GoFood - Mamat", "GoFood - Gito", "GrabFood", "ShopeeFood")
+        for (platform in platforms) {
+            compose.onNodeWithText(platform).performScrollTo().performClick()
+            moneyReceived.performScrollTo().assertIsOn()
+        }
+        moneyReceived.performClick().assertIsOff()
+        for (channel in listOf("Direct") + platforms) {
+            compose.onNodeWithText(channel).performScrollTo().performClick()
+            moneyReceived.performScrollTo().assertIsOff()
+        }
+    }
+
+    @Test
+    fun shoppingRecapOpensFromJournalAndUpdatesFromRoom() {
+        val today = businessToday()
+        val previousMonth = today.withDayOfMonth(1).minusMonths(1)
+        fun recordPurchase(name: String, amount: String, date: String = today.toString()) = runBlocking {
+            app.repository.submit(
+                "save_expense", newId(), 0,
+                JSONObject().put("date", date).put("items", JSONArray().put(
+                    JSONObject().put("id", newId()).put("name", name).put("amount", amount),
+                )),
+            )
+        }
+        recordPurchase("Daging", "90000")
+        recordPurchase("Daging", "70000", previousMonth.toString())
+        compose.setContent { BasoTheme { FunctionalNotebook() } }
+        awaitText("Monthly Shopping Recap")
+        compose.onNodeWithText("Monthly Shopping Recap").performScrollTo().performClick()
+        awaitText("Rp 90.000")
+        compose.onNodeWithText("Daging").performClick()
+        compose.onNodeWithText("Purchases").assertIsDisplayed()
+        Assert.assertEquals(2, compose.onAllNodesWithText("Rp 90.000").fetchSemanticsNodes().size)
+        compose.onNodeWithContentDescription("Back").performClick()
+        recordPurchase("Mie", "30000")
+        awaitText("Rp 120.000")
+        compose.onNodeWithText("Mie").assertIsDisplayed()
+
+        val monthName = today.month.getDisplayName(TextStyle.FULL_STANDALONE, Locale.ENGLISH)
+        val previousMonthName = previousMonth.month.getDisplayName(TextStyle.FULL_STANDALONE, Locale.ENGLISH)
+        compose.onNodeWithText(monthName).performClick()
+        compose.onNodeWithText(previousMonthName).performScrollTo().performClick()
+        if (previousMonth.year != today.year) {
+            compose.onNodeWithText(today.year.toString()).performClick()
+            compose.onNodeWithText(previousMonth.year.toString()).performClick()
+        }
+        awaitText("Rp 70.000")
+        compose.onNodeWithText("Mie").assertDoesNotExist()
+        compose.onNodeWithText(previousMonth.year.toString()).performClick()
+        val emptyYear = if (previousMonth.year != today.year) previousMonth.year - 1 else today.year + 1
+        compose.onNodeWithText(emptyYear.toString()).performClick()
+        compose.onNodeWithText("No shopping recorded for this month.").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Back").performClick()
+        compose.onNodeWithText("Add shopping").assertExists()
+    }
+
     private fun assertSaleFieldOrder() {
         val customer = compose.onNodeWithText("Customer (optional)").fetchSemanticsNode().boundsInRoot
         val amount = compose.onNodeWithText("Sale amount").fetchSemanticsNode().boundsInRoot

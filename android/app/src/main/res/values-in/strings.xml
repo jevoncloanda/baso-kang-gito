@@ -21,6 +21,13 @@
     <string name="pin_backspace">Hapus angka terakhir</string>
     <string name="pin_verifying">Memeriksa PIN…</string>
     <string name="shopping_total">Jumlah belanja</string>
+    <string name="shopping_recap_title">Rekap Belanja Bulanan</string>
+    <string name="shopping_recap_choose_month">Pilih bulan</string>
+    <string name="shopping_recap_choose_year">Pilih tahun</string>
+    <string name="shopping_recap_unattributed">Belanja Lainnya / Tidak Terperinci</string>
+    <string name="shopping_recap_empty">Belum ada catatan belanja bulan ini.</string>
+    <string name="shopping_recap_purchases">Rincian pembelian</string>
+    <string name="shopping_recap_no_purchases">Sudah tidak ada pembelian barang ini pada bulan yang dipilih.</string>
     <string name="shopping_items">Daftar belanja</string>
     <string name="backup_menu">Alat</string>
     <string name="tools_title">Alat &amp; pengaturan</string>

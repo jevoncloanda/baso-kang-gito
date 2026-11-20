@@ -85,7 +85,14 @@ function global:Invoke-WebRequest {
                 $html = $html.Replace(('="/' + $asset + '"'), ('="/' + $asset + '?v=' + $hash + '"'))
             }
             [IO.File]::WriteAllText($OutFile, $html, $encoding)
-            if ($global:publishTestMode -eq 'analytics') {
+            if ($assetPath -eq '/privacy' -and $global:publishTestMode -in @('privacy-edge', 'privacy-tamper')) {
+                $html = $html.Replace('<!--email_off-->', '').Replace('<!--/email_off-->', '')
+                if ($global:publishTestMode -eq 'privacy-tamper') {
+                    $html = $html.Replace('mailto:', 'https://example.invalid/')
+                }
+                [IO.File]::WriteAllText($OutFile, $html, $encoding)
+            }
+            if ($global:publishTestMode -in @('analytics', 'privacy-edge', 'privacy-tamper')) {
                 $beacon = '<script type="module" src="https://static.cloudflareinsights.com/beacon.min.js/vabc123" integrity="sha512-' + ('A' * 86) + '==" data-cf-beacon=''{' + '"version":"2024.11.0","token":"' + ('a' * 32) + '","r":1,"spa":2}'' crossorigin="anonymous"></script>' + "`n"
                 [IO.File]::WriteAllText($OutFile, $html.Replace('</body>', ($beacon + '</body>')), $encoding)
             }
@@ -99,7 +106,9 @@ function global:Invoke-WebRequest {
 
 try {
     $passed = 0
-    foreach ($mode in @('success', 'success-stderr', 'analytics', 'stale-html', 'ssh', 'scp', 'remote', 'remote-stderr', 'malformed-stderr', 'checksum', 'api')) {
+    $successModes = @('success', 'success-stderr', 'analytics', 'privacy-edge')
+    $rollbackModes = @('remote', 'remote-stderr', 'malformed-stderr', 'checksum', 'api', 'stale-html', 'privacy-tamper')
+    foreach ($mode in $successModes + $rollbackModes + @('ssh', 'scp')) {
         $global:publishTestMode = $mode
         $global:publishTestSsh = 0; $global:publishTestScp = 0; $global:publishTestActivation = 0; $global:publishTestRollback = 0
         $global:publishTestPolicy = Get-Content -LiteralPath (Join-Path $global:publishTestRoot 'backend/release-policy.json') -Raw | ConvertFrom-Json
@@ -115,9 +124,9 @@ try {
         try {
             & (Join-Path $global:publishTestRoot 'backend/scripts/Publish-Cloudra.ps1') -SshHost test-cloudra -NotesFile $notesFile -Candidate $spacedCandidate -Publish *> $caseLog
         } catch { $failed = $true; $failureMessage = $_.Exception.Message + ' ' + $_.ScriptStackTrace }
-        Assert-Test ($failed -eq ($mode -notin @('success', 'success-stderr', 'analytics'))) "Unexpected result for ${mode}: $failureMessage"
+        Assert-Test ($failed -eq ($mode -notin $successModes)) "Unexpected result for ${mode}: $failureMessage"
         Assert-Test ($global:publishTestSsh -gt 0) "SSH fake unused for $mode"
-        Assert-Test ($global:publishTestRollback -eq $(if ($mode -in @('remote', 'remote-stderr', 'malformed-stderr', 'checksum', 'api', 'stale-html')) { 1 } else { 0 })) "Incorrect rollback behavior for $mode"
+        Assert-Test ($global:publishTestRollback -eq $(if ($mode -in $rollbackModes) { 1 } else { 0 })) "Incorrect rollback behavior for $mode"
         if ($mode -eq 'remote-stderr') { Assert-Test ($failureMessage -match 'exit 23' -and $failureMessage -match 'IO is still pending') 'Nonzero SSH exit or stderr diagnostic was discarded' }
         if ($mode -eq 'success-stderr') { Assert-Test ((Get-Content -LiteralPath $caseLog -Raw) -match 'IO is still pending') 'Successful SSH stderr diagnostic was discarded' }
         if ($mode -eq 'ssh') { Assert-Test ($global:publishTestScp -eq 0) 'Upload followed failed SSH preflight' }
