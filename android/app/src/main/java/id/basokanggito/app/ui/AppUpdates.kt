@@ -9,7 +9,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -24,6 +23,7 @@ import id.basokanggito.app.R
 import id.basokanggito.app.data.AppDownloadPage
 import id.basokanggito.app.data.AppVersionPolicy
 import id.basokanggito.app.data.ApkUpdaterViewModel
+import id.basokanggito.app.data.ApkUpdateState
 import id.basokanggito.app.data.ApkPhase
 import id.basokanggito.app.data.ApkError
 
@@ -41,12 +41,11 @@ internal fun AppUpdateButton(policy: AppVersionPolicy, prominent: Boolean = fals
 @Composable
 internal fun AppUpdateDownloadDialog() {
     val updater: ApkUpdaterViewModel = viewModel()
-    val state by updater.state.collectAsState()
+    val state = updater.state.collectAsState().value
     val context = LocalContext.current
     val installer = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { updater.installed(it.resultCode) }
     val permission = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { updater.permissionReturned() }
     if (state.phase == ApkPhase.IDLE) return
-    val busy = state.phase in listOf(ApkPhase.DOWNLOADING, ApkPhase.VERIFYING)
     AlertDialog(onDismissRequest = updater::dismiss,
         title = { Text(stringResource(if (state.phase == ApkPhase.READY) R.string.apk_update_ready else R.string.app_update_action)) },
         text = { Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(Space.medium)) {
@@ -66,10 +65,7 @@ internal fun AppUpdateDownloadDialog() {
                     else -> R.string.apk_update_network
                 }
             }))
-            if (state.phase == ApkPhase.DOWNLOADING && state.percent != null) {
-                Text(stringResource(R.string.apk_update_progress, state.percent!!))
-                LinearProgressIndicator(progress = { state.percent!! / 100f }, modifier = Modifier.fillMaxWidth())
-            } else if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
+            AppUpdateDownloadProgress(state)
             Text(stringResource(R.string.app_update_preserves_data))
             if (state.phase != ApkPhase.INSTALLING) TextButton(onClick = { openAppDownload(context) }, modifier = Modifier.heightIn(min = 48.dp)) { Text(stringResource(R.string.apk_update_browser)) }
         } },
@@ -88,6 +84,18 @@ internal fun AppUpdateDownloadDialog() {
         dismissButton = {
             if (state.phase != ApkPhase.INSTALLING) TextButton(onClick = updater::dismiss, modifier = Modifier.heightIn(min = 48.dp)) { Text(stringResource(R.string.cancel)) }
         })
+}
+
+@Composable
+internal fun AppUpdateDownloadProgress(state: ApkUpdateState) {
+    val percent = state.percent
+    if (state.phase == ApkPhase.DOWNLOADING && percent != null) {
+        Text(stringResource(R.string.apk_update_progress, percent))
+        // Material uses this callback for drawing and semantics after composition.
+        LinearProgressIndicator(progress = { percent / 100f }, modifier = Modifier.fillMaxWidth())
+    } else if (state.phase == ApkPhase.DOWNLOADING || state.phase == ApkPhase.VERIFYING) {
+        LinearProgressIndicator(Modifier.fillMaxWidth())
+    }
 }
 
 @Composable
